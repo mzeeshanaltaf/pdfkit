@@ -58,7 +58,7 @@ function usePlaceholderProcess(toolId: ToolId) {
 }
 
 /** Tools whose canvas is a page grid rather than a file grid. */
-const PAGE_LEVEL_TOOLS: ReadonlySet<ToolId> = new Set(["organize", "split", "page-numbers"]);
+const PAGE_LEVEL_TOOLS: ReadonlySet<ToolId> = new Set(["organize", "page-numbers"]);
 
 /** The page-level canvas, wired to the shared page state so reorder and rotate work. */
 function PageCanvas() {

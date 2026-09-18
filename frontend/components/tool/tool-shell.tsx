@@ -30,8 +30,12 @@ interface ToolShellProps {
   info?: ReactNode;
   /** Replaces the default file grid, e.g. with a PageGrid for Organize. */
   canvas?: ReactNode;
-  /** Extra gate on the CTA, on top of "at least one readable file". */
-  canSubmit?: boolean;
+  /**
+   * Extra gate on the CTA, on top of "at least one readable file". A predicate form is
+   * given the readable files, which is how Merge asks for two of them and Split checks its
+   * ranges against the real page count without lifting the file list out of the shell.
+   */
+  canSubmit?: boolean | ((files: ToolFile[]) => boolean);
   /** Per-card hover controls in the default file grid. */
   renderFileActions?: (file: ToolFile) => ReactNode;
 }
@@ -79,6 +83,7 @@ export function ToolShell({
   );
   const readableFiles = useMemo(() => files.filter((file) => !file.error), [files]);
   const stillLoading = readableFiles.some((file) => file.pageCount === null);
+  const submittable = typeof canSubmit === "function" ? canSubmit(readableFiles) : canSubmit;
 
   const handleSubmit = useCallback(async () => {
     const controller = new AbortController();
@@ -192,7 +197,7 @@ export function ToolShell({
             title={tool.name}
             info={info}
             ctaLabel={tool.ctaLabel}
-            ctaDisabled={!canSubmit || readableFiles.length === 0 || stillLoading}
+            ctaDisabled={!submittable || readableFiles.length === 0 || stillLoading}
             onSubmit={handleSubmit}
           >
             {options}
