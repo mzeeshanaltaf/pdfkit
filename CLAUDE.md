@@ -26,7 +26,7 @@ PDFToolkit/
 ├── frontend/                 Next.js app
 ├── backend/                  FastAPI app (uv-managed)
 ├── docker-compose.yml        local dev + Coolify "Docker Compose" resource
-├── iLovePDF/                 reference screenshots — keep, don't copy pixel-for-pixel
+├── iLovePDF/                 reference screenshots — local only (gitignored), don't copy pixel-for-pixel
 ├── docs/
 │   ├── PLAN.md                original full plan (reference only)
 │   └── phases/                phase-N-*.md — the actual task breakdown, work from these
