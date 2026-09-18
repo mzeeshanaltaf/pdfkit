@@ -36,12 +36,12 @@ PDFToolkit/
 
 ## Key conventions
 
-- **`lib/tools.ts`** is the single registry for all 10 tools (`{ id, slug, name, tagline, description, icon, accent, multiple, ctaLabel }`). Landing grid, nav, per-page metadata, and "continue to another tool" links all read from it — never hardcode tool info elsewhere.
+- **`lib/tools.ts`** is the single registry for all 10 tools (`{ id, slug, name, tagline, description, icon, accent, multiple, ctaLabel, runsIn }`). Landing grid, nav, per-page metadata, and "continue to another tool" links all read from it — never hardcode tool info elsewhere. `runsIn` is `browser | backend | hybrid` and is what decides whether the 50 MB cap applies to a file.
 - **Hydration rule** (global, from `~/.claude/CLAUDE.md`): any component tree using browser-only APIs at init (`crypto.randomUUID()`, canvas, `File`, `window.*`) must be loaded with `next/dynamic` + `{ ssr: false }`. Every tool workspace in this app qualifies.
 - **`ToolShell`** owns the `select → configure → processing → done | error` state machine and the three-column layout (canvas + fixed-width right sidebar, sidebar stacks below `lg`). Every tool page is a thin wrapper around it plus a tool-specific options panel.
 - Backend passwords (Protect/Unlock) go to `qpdf` via `--password-file`, never as a bare CLI arg — avoids leaking via `ps`.
 - Backend subprocess calls go through `app/services/runner.py` (timeout + `Semaphore(MAX_CONCURRENT_JOBS)`), not raw `asyncio.create_subprocess_exec` calls scattered in services.
-- Test fixtures (`frontend/test-fixtures/`: a multi-page text PDF, a scanned image-only PDF, a password-protected PDF) are generated once and reused across phases 2–6's manual verification matrices — don't recreate them per phase.
+- Test fixtures (`frontend/test-fixtures/`: `sample-text.pdf` 5 pages of real text, `sample-scanned.pdf` 2 image-only pages with no text layer, `sample-protected.pdf` the text one encrypted with password `hunter2`) are committed and reused across phases 2–6's manual verification matrices — don't recreate them per phase. `frontend/scripts/make-test-fixtures.mjs` regenerates the first two if they are ever lost; the encrypted one needs qpdf from the backend image (command printed by the script).
 
 ## Working across sessions
 

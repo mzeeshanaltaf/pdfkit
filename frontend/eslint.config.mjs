@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored by scripts/copy-pdf-worker.mjs on postinstall; not ours to lint.
+    "public/pdf.worker.min.mjs",
   ]),
 ]);
 
