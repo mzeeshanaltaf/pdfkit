@@ -14,9 +14,15 @@ re-interprets that geometry and hands back a file around 45% **bigger**, while
 simply rewriting the numbers takes a quarter off it. That is
 ``app.services.streams``.
 
-So we survey the document first, run only the candidates its shape justifies,
-and keep the smallest result. If nothing beats the upload we return the upload,
-and the response headers report equal sizes so the UI can say so honestly.
+*Fonts.* Word embeds font programs whole. One emoji in a two-page document
+drags in all 7.7 MB of Segoe UI Emoji, and Ghostscript's subsetter cannot cut
+it down because the bulk is a colour table it does not understand. That is
+``app.services.fonts``, and it runs first, because a smaller set of fonts is a
+better input for either of the others.
+
+So we survey the document, run only the candidates its shape justifies, and keep
+the smallest result. If nothing beats the upload we return the upload, and the
+response headers report equal sizes so the UI can say so honestly.
 """
 
 from __future__ import annotations
@@ -25,14 +31,16 @@ import asyncio
 import logging
 import shutil
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException
+from pypdf import PdfReader
 
 from app.config import timeout_for
 from app.deps import SavedUpload, UploadBatch
-from app.services import streams
+from app.services import fonts, streams
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import job_slot, run
@@ -44,9 +52,21 @@ DEFAULT_LEVEL = "recommended"
 
 # Below these shares of the file, a strategy cannot win enough to be worth the
 # seconds it costs. A scan is ~97% image bytes; a Print-To-PDF document is ~99%
-# content-stream bytes; the middle is rare, and there both candidates run.
+# content-stream bytes; a Word document with an emoji in it is ~97% font bytes.
+# The middle is rare, and there more than one candidate runs.
 IMAGE_SHARE_FLOOR = 0.10
 CONTENT_SHARE_FLOOR = 0.10
+FONT_SHARE_FLOOR = 0.10
+
+# How many pages are rasterised to prove font subsetting changed nothing. Enough
+# to catch a systematic mistake without rendering a whole book; the first and
+# last page are always among them.
+VERIFY_PAGES = 8
+VERIFY_DPI = 72
+# Rasterising is not bit-exact across runs of a different font program even when
+# it is correct, so allow a hair. A genuinely dropped glyph moves far more than
+# this: the en-dash bug that prompted the check moved 0.08% of the page.
+VERIFY_TOLERANCE = 0.0002
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +194,22 @@ async def _run_ghostscript(source: Path, destination: Path, preset: Preset) -> b
     return False
 
 
+async def _parses_cleanly(source: Path) -> bool:
+    """True when poppler reads every content stream without complaint.
+
+    ``pdftotext`` walks the operators, not just the text, so it is the cheapest
+    thing that will notice an operand we mangled into an operator. Milliseconds
+    on an ordinary document; a few seconds on one with a hundred megabytes of
+    vector drawing in it, which is why the caller only reaches for it once.
+    """
+    result = await run(
+        ["pdftotext", str(source), "-"],
+        operation="compress",
+        check=False,
+    )
+    return result.ok and "Syntax Error" not in result.output
+
+
 async def _run_rewrite(source: Path, destination: Path, preset: Preset) -> bool:
     """Shorten every content stream, then let qpdf tighten the file structure."""
     async with job_slot("compress"):
@@ -189,6 +225,19 @@ async def _run_rewrite(source: Path, destination: Path, preset: Preset) -> bool:
         )
     if not rebuilt:
         return False
+
+    # The rewriter edits drawing operators as raw bytes. That is the most
+    # dangerous thing this service does, so the result is read back before it is
+    # allowed to compete: a number turned into an operator breaks every operand
+    # after it, and the file still opens, so nothing else would notice. The
+    # source is only parsed when the candidate looks bad, which keeps the cost
+    # at one pass on the documents where a pass is expensive.
+    if not await _parses_cleanly(destination):
+        if await _parses_cleanly(source):
+            logger.error("stream rewrite broke %s; discarding it", source.name)
+            destination.unlink(missing_ok=True)
+            return False
+        logger.info("%s already had content-stream errors; keeping the rewrite", source.name)
 
     # pypdf writes a plain cross-reference table and one object per entry. This
     # packs the objects that are not streams into object streams; it is under a
@@ -207,30 +256,137 @@ async def _run_rewrite(source: Path, destination: Path, preset: Preset) -> bool:
     return True
 
 
+async def _render(source: Path, folder: Path, pages: Sequence[int]) -> list[Path] | None:
+    """Rasterise the named pages to PNG, or None if Ghostscript's poppler friend fails."""
+    folder.mkdir(parents=True, exist_ok=True)
+    produced: list[Path] = []
+    for number in pages:
+        prefix = folder / f"p{number}"
+        result = await run(
+            [
+                "pdftoppm", "-png", "-r", str(VERIFY_DPI),
+                "-f", str(number), "-l", str(number),
+                str(source), str(prefix),
+            ],
+            operation="probe",
+            check=False,
+        )
+        if not result.ok:
+            return None
+        matches = sorted(folder.glob(f"p{number}-*.png"))
+        if len(matches) != 1:
+            return None
+        produced.append(matches[0])
+    return produced
+
+
+def _same_pixels(before: Sequence[Path], after: Sequence[Path]) -> bool:
+    """True when every rendered page pair is the same to within the tolerance."""
+    from PIL import Image, ImageChops
+
+    for left, right in zip(before, after, strict=True):
+        with Image.open(left) as one, Image.open(right) as two:
+            first, second = one.convert("RGB"), two.convert("RGB")
+            if first.size != second.size:
+                return False
+            difference = ImageChops.difference(first, second)
+            if difference.getbbox() is None:
+                continue
+            # Count only pixels that moved enough to be a real mark rather than
+            # a rasteriser rounding one edge differently.
+            histogram = difference.convert("L").histogram()
+            moved = sum(histogram[16:])
+            if moved > first.size[0] * first.size[1] * VERIFY_TOLERANCE:
+                return False
+    return True
+
+
+async def _renders_the_same(before: Path, after: Path, workspace: Path) -> bool:
+    """Check that subsetting the fonts did not change how the document looks.
+
+    The scan in ``app.services.fonts`` refuses anything it does not understand,
+    but a content stream it never reached would look exactly like a font with no
+    glyphs in use — and the symptom of that is text quietly going blank. This is
+    the check that turns a mistake there into a lost compression opportunity.
+    """
+    try:
+        count = len(PdfReader(str(before)).pages)
+    except Exception as error:  # noqa: BLE001 — pypdf raises very broadly
+        logger.info("cannot count pages to verify %s: %s", before.name, error)
+        return False
+    if count == 0:
+        return False
+
+    if count <= VERIFY_PAGES:
+        pages = list(range(1, count + 1))
+    else:
+        # An even spread, first and last included.
+        step = (count - 1) / (VERIFY_PAGES - 1)
+        pages = sorted({round(1 + step * index) for index in range(VERIFY_PAGES)})
+
+    folder = workspace / "verify"
+    original = await _render(before, folder / "before", pages)
+    if original is None:
+        return False
+    candidate = await _render(after, folder / "after", pages)
+    if candidate is None:
+        return False
+
+    same = await asyncio.to_thread(_same_pixels, original, candidate)
+    shutil.rmtree(folder, ignore_errors=True)
+    if not same:
+        logger.warning("font subsetting changed how %s renders; discarding it", before.name)
+    return same
+
+
+async def _run_font_subset(source: Path, destination: Path, workspace: Path) -> bool:
+    async with job_slot("compress"):
+        deadline = time.monotonic() + timeout_for("compress")
+        subsetted = await asyncio.to_thread(fonts.subset, source, destination, deadline=deadline)
+    if not subsetted:
+        return False
+    if await _renders_the_same(source, destination, workspace):
+        return True
+    destination.unlink(missing_ok=True)
+    return False
+
+
 async def compress_one(upload: SavedUpload, workspace: Path, level: str) -> OutputFile:
     """Compress one file, returning the original when nothing beat it."""
     ensure_readable(upload.path)
     preset = PRESETS[level]
-    destination = workspace / f"{upload.path.stem}-compressed.pdf"
+    stem = upload.path.stem
+    destination = workspace / f"{stem}-compressed.pdf"
 
     measured = await asyncio.to_thread(streams.survey, upload.path)
     candidates: list[Path] = []
 
+    # Fonts first: cutting them is orthogonal to both other routes, and leaves a
+    # smaller document for whichever of them runs next.
+    working = upload.path
+    if measured is None or measured.font_share >= FONT_SHARE_FLOOR:
+        trimmed = workspace / f"{stem}-fonts.pdf"
+        if await _run_font_subset(upload.path, trimmed, workspace):
+            working = trimmed
+            candidates.append(trimmed)
+            measured = await asyncio.to_thread(streams.survey, trimmed)
+
     wants_rewrite = measured is None or measured.content_share >= CONTENT_SHARE_FLOOR
     wants_ghostscript = measured is None or measured.image_share >= IMAGE_SHARE_FLOOR
-    if not wants_rewrite and not wants_ghostscript:
-        # Neither pictures nor drawing: the weight is fonts, attachments or
-        # metadata. Ghostscript is the only one of the two that touches those.
+    if not wants_rewrite and not wants_ghostscript and working is upload.path:
+        # No pictures, no drawing, and the fonts gave nothing: the weight is
+        # elsewhere — attachments, metadata, a bloated object tree. Ghostscript
+        # is the only one of the three that rebuilds all of that.
         wants_ghostscript = True
 
     if wants_rewrite:
-        rewritten = workspace / f"{upload.path.stem}-rewritten.pdf"
-        if await _run_rewrite(upload.path, rewritten, preset):
+        rewritten = workspace / f"{stem}-rewritten.pdf"
+        if await _run_rewrite(working, rewritten, preset):
             candidates.append(rewritten)
 
     if wants_ghostscript:
-        distilled = workspace / f"{upload.path.stem}-gs.pdf"
-        if await _run_ghostscript(upload.path, distilled, preset):
+        distilled = workspace / f"{stem}-gs.pdf"
+        if await _run_ghostscript(working, distilled, preset):
             candidates.append(distilled)
 
     if not candidates:

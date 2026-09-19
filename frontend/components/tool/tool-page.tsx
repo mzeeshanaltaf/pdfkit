@@ -28,6 +28,12 @@ const WORKSPACES: Record<ToolId, ComponentType> = {
     () => import("@/components/tools/page-numbers/page-numbers-workspace"),
   ),
   "pdf-to-jpg": lazyWorkspace(() => import("@/components/tools/pdf-to-jpg/pdf-to-jpg-workspace")),
+  "pdf-to-markdown": lazyWorkspace(
+    () => import("@/components/tools/pdf-to-markdown/pdf-to-markdown-workspace"),
+  ),
+  "pdf-to-word": lazyWorkspace(
+    () => import("@/components/tools/pdf-to-word/pdf-to-word-workspace"),
+  ),
   protect: lazyWorkspace(() => import("@/components/tools/protect/protect-workspace")),
   rotate: lazyWorkspace(() => import("@/components/tools/rotate/rotate-workspace")),
   split: lazyWorkspace(() => import("@/components/tools/split/split-workspace")),

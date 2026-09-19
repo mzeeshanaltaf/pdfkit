@@ -1,7 +1,8 @@
 # PDFKit backend
 
-FastAPI service for the PDF tools that need native binaries (Ghostscript, qpdf,
-Tesseract, poppler): Compress, OCR, Protect, Unlock and image extraction.
+FastAPI service for the PDF tools that need native binaries or heavyweight
+libraries (Ghostscript, qpdf, Tesseract, poppler, pdf2docx, anydoc): Compress,
+OCR, Protect, Unlock, image extraction, PDF to Word and PDF to Markdown.
 
 Run it via Docker from the repo root — those binaries are not expected to be
 installed on the host:
@@ -25,6 +26,8 @@ once the response has been sent.
 | `POST /unlock` | `password` (optional) | PDF or ZIP, or 422 |
 | `POST /ocr` | `languages` (comma list, ≤ 3) | PDF or ZIP |
 | `POST /images/extract` | `quality` = `normal` \| `high` | ZIP of JPGs |
+| `POST /convert/word` | `ocr` = `off` (default) \| `auto`, `languages` | DOCX or ZIP |
+| `POST /convert/markdown` | `ocr` = `auto` (default) \| `off`, `languages` | Markdown or ZIP |
 | `GET /ocr/languages` | — | `[{code, name}]` |
 | `GET /health` | — | `{"status": "ok"}` |
 
@@ -37,6 +40,9 @@ Errors are always `{"detail": "..."}`. The ones the UI is expected to branch on:
 | 422 | `password_required` | Encrypted input, no usable password given |
 | 422 | `wrong_password` | A password was supplied and qpdf rejected it |
 | 422 | `no_images_found` | `/images/extract` found nothing to extract |
+| 422 | `needs_ocr` | The PDF is a scan and `ocr=off`, or OCR recognised nothing |
+| 422 | `document_unreadable` | The converter could not parse the document |
+| 422 | `document_too_complex` | The converter hit an internal resource limit |
 | 400 | `password_missing` / `password_invalid` | Empty, absent, or containing a newline |
 | 503 | `server_busy` | No job slot within `QUEUE_TIMEOUT_SECONDS` |
 | 504 | `processing_timed_out` | The native tool exceeded its per-operation timeout |
@@ -49,6 +55,8 @@ app/
 ├── deps.py          save_uploads(): stream, validate, sanitise; UploadBatch owns the temp dir
 ├── main.py          app, CORS, router mounting
 ├── routers/         one thin module per endpoint — parse form, call service, respond
+├── tools/
+│   └── anydoc_cli.py  anydoc as a killable subprocess (see its docstring for why)
 └── services/
     ├── runner.py    the ONLY place a subprocess is spawned (semaphore + timeout + sanitised stderr)
     ├── responses.py single file or zip, Content-Disposition, cleanup BackgroundTask
@@ -57,13 +65,16 @@ app/
     ├── compress.py  ghostscript
     ├── protect.py   qpdf --encrypt
     ├── unlock.py    qpdf --decrypt
-    ├── ocr.py       ocrmypdf + the tesseract language list
-    └── images.py    pdfimages + Pillow
+    ├── ocr.py       ocrmypdf + the tesseract language list + the shared `ocr` field
+    ├── images.py    pdfimages + Pillow
+    ├── word.py      pdf2docx, via its CLI
+    ├── markdown.py  anydoc, with a per-page OCR fallback
+    └── text_layer.py  reading, and revealing, the text layer OCR leaves behind
 ```
 
 ## Tests
 
-The suite needs Ghostscript, qpdf, Tesseract and poppler, so it runs in its own
+The suite needs Ghostscript, qpdf, Tesseract, poppler, pdf2docx and anydoc, so it runs in its own
 image — the `test` build target, which is the runtime image plus dev
 dependencies and `tests/`. Fixtures are generated at run time; no binary test
 assets are committed.

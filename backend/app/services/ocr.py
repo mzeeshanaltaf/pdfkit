@@ -137,12 +137,33 @@ async def validate_languages(raw: str | None) -> list[str]:
     return ordered
 
 
-async def ocr_one(
-    upload: SavedUpload, workspace: Path, scratch: Path, languages: list[str]
-) -> OutputFile:
-    ensure_readable(upload.path)
-    destination = workspace / f"{upload.path.stem}-ocr.pdf"
+OCR_MODES = ("off", "auto")
 
+
+def validate_ocr_mode(mode: str | None, *, default: str) -> str:
+    """The ``ocr`` field shared by the two conversion tools.
+
+    ``off`` never runs OCR. ``auto`` runs OCRmyPDF with ``--skip-text``, which
+    leaves pages that already carry text alone — so it means "read the pages
+    that need reading", not "re-OCR the document".
+    """
+    chosen = (mode or default).strip().lower()
+    if chosen not in OCR_MODES:
+        raise HTTPException(
+            status_code=400, detail=f"ocr must be one of {', '.join(OCR_MODES)}."
+        )
+    return chosen
+
+
+async def ocr_to_path(
+    source: Path, destination: Path, scratch: Path, languages: list[str]
+) -> Path:
+    """Add a text layer to ``source``, writing the result to ``destination``.
+
+    The OCR step on its own, so the tools that need a readable document before
+    they can do their real job — PDF to Word and PDF to Markdown — get exactly
+    the same behaviour as the OCR tool rather than a second implementation of it.
+    """
     result = await run(
         [
             "ocrmypdf",
@@ -154,7 +175,7 @@ async def ocr_one(
             "--optimize",
             "1",
             "--quiet",
-            str(upload.path),
+            str(source),
             str(destination),
         ],
         operation="ocr",
@@ -171,7 +192,16 @@ async def ocr_one(
         raise HTTPException(
             status_code=500, detail=sanitise(result.output) or "ocr_failed"
         )
+    return destination
 
+
+async def ocr_one(
+    upload: SavedUpload, workspace: Path, scratch: Path, languages: list[str]
+) -> OutputFile:
+    ensure_readable(upload.path)
+    destination = await ocr_to_path(
+        upload.path, workspace / f"{upload.path.stem}-ocr.pdf", scratch, languages
+    )
     return OutputFile(
         path=destination, download_name=derive_name(upload.original_name, "ocr")
     )

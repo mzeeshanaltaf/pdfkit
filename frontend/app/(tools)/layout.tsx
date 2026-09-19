@@ -8,7 +8,7 @@ import { SiteFooter } from "@/components/layout/site-footer";
  * The footer used to be omitted here so the options sidebar could run full height. It still
  * does — the sidebar lives inside the workspace, which is a full viewport tall regardless of
  * what follows it — and the footer is now the only place a crawler on a tool page can find
- * all ten tool links as real HTML: the header's "All tools" menu is a Radix dropdown whose
+ * every tool link as real HTML: the header's "All tools" menu is a Radix dropdown whose
  * items are not rendered until it is opened.
  *
  * The `main` landmark stays here rather than inside `ToolShell`, so every phase of the state

@@ -20,8 +20,8 @@ export function SiteFooter() {
           <div className="max-w-xs">
             <Brand />
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              Ten PDF tools, no account and nothing kept. Files sent to the server are deleted
-              as soon as the job finishes.
+              {TOOLS.length} PDF tools, no account and nothing kept. Files sent to the server
+              are deleted as soon as the job finishes.
             </p>
           </div>
 

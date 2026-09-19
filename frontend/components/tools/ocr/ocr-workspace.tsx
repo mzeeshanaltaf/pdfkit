@@ -7,8 +7,9 @@ import { ToolShell } from "@/components/tool/tool-shell";
 import type { ToolResult, ToolRunContext } from "@/components/tool/types";
 import { getTool } from "@/lib/tools";
 
+import { useOcrLanguages } from "@/components/tool/use-ocr-languages";
+
 import { OcrOptions } from "./ocr-options";
-import { useOcrLanguages } from "./use-ocr-languages";
 
 const tool = getTool("ocr");
 

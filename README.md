@@ -1,17 +1,21 @@
 # PDFKit
 
-A self-hosted, iLovePDF-style web app with 10 PDF tools. Pick files → configure in
+A self-hosted, iLovePDF-style web app with 12 PDF tools. Pick files → configure in
 the right sidebar → one big button → download. No accounts, no stored files:
 everything is per-request and ephemeral.
 
-Six tools run entirely in the browser (nothing is uploaded); the rest go to a small
-FastAPI service that shells out to Ghostscript, qpdf and Tesseract — plus, for
-compression, a content-stream rewriter of its own, since Ghostscript makes a
-vector-heavy PDF *bigger* rather than smaller.
+Five tools run entirely in the browser (nothing is uploaded); the rest go to a small
+FastAPI service that shells out to Ghostscript, qpdf, Tesseract, pdf2docx and anydoc.
+Compress also carries two passes of its own, because Ghostscript can do neither: a
+font subsetter (a Word document with one emoji in it embeds several megabytes of
+unused font) and a content-stream rewriter (pdfwrite makes a vector PDF *bigger*).
 
 | Runs in the browser | Runs on the backend |
 |---|---|
-| Merge, Split, Rotate, Organize, Page Numbers, PDF→JPG (page mode) | Compress, OCR, Protect, Unlock, PDF→JPG (extract-images mode) |
+| Merge, Split, Rotate, Organize, Page Numbers | Compress, OCR, Protect, Unlock, PDF→Word, PDF→Markdown |
+
+PDF→JPG is the mixed case: page rendering happens in the browser, while extracting the
+images already embedded in a document uses the backend.
 
 ## Repository layout
 
@@ -69,7 +73,7 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 | `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins |
 | `MAX_UPLOAD_MB` | backend | `50` | Per-file cap; the frontend enforces the same number client-side |
 | `MAX_CONCURRENT_JOBS` | backend | `2` | Concurrent heavy jobs — subprocesses (Ghostscript/qpdf/OCR) and compression's in-process stream rewrite share the limit |
-| `JOB_TIMEOUT_SECONDS` | backend | `180` | Wall-clock ceiling for one job |
+| `JOB_TIMEOUT_SECONDS` | backend | `180` | Wall-clock ceiling for one job; per-operation overrides exist, e.g. `OCR_TIMEOUT_SECONDS` (600), `WORD_TIMEOUT_SECONDS` (300), `MARKDOWN_TIMEOUT_SECONDS` (120) |
 | `WORK_DIR` | backend | `/tmp/pdfkit` | Scratch space, mounted as tmpfs in compose |
 
 ## Deployment

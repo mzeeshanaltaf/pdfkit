@@ -8,6 +8,7 @@ like a number.
 from __future__ import annotations
 
 import io
+import re
 import zlib
 
 import pytest
@@ -15,6 +16,9 @@ from pypdf import PdfReader
 
 from app.services import streams
 from tests.conftest import build_vector_pdf
+
+# A PDF real number, as the grammar actually allows it: no exponent.
+_PLAIN = re.compile(rb"\A[+-]?(?:\d+\.?\d*|\.\d+)\Z")
 
 
 # --- the lossless default ----------------------------------------------------
@@ -92,6 +96,34 @@ def test_rounding_never_collapses_a_small_number_to_zero() -> None:
 
 def test_rounding_never_lengthens_a_number() -> None:
     assert streams.shorten(b"1.5 0.25 m", precision=6) == b"1.5 0.25 m"
+
+
+@pytest.mark.parametrize("precision", [1, 2, 3, 6])
+def test_rounding_never_emits_exponent_notation(precision: int) -> None:
+    """The regression that shipped: `%g` turns 1.2e-06 into a token PDF has no
+    grammar for, and a reader takes `e-06` as an *operator* — the operand it was
+    meant to be is gone and the real operator is left short of arguments.
+
+    Swept across magnitudes rather than spot-checked, because the old bug hid
+    below 1e-5 and the one value the first test picked sat just above it.
+    """
+    numbers = [f"{sign}{mantissa}e-{exponent:02d}" for sign in ("", "-")
+               for mantissa in ("1", "1.5", "9.87654")
+               for exponent in range(1, 12)]
+    source = " ".join(f"{float(n):.12f}" for n in numbers).encode() + b" m"
+    result = streams.shorten(source, precision=precision)
+    assert b"e" not in result.replace(b" m", b"")
+    for token in result.split()[:-1]:
+        assert _PLAIN.match(token), f"{token!r} is not a PDF number"
+
+
+def test_rounding_keeps_every_token_parseable_as_a_number() -> None:
+    source = b"0.5 100.25 0.000004 12345.6789 0.0 -0.00001 re"
+    result = streams.shorten(source, precision=2)
+    assert result.split()[-1] == b"re"
+    assert len(result.split()) == len(source.split()), "an operand went missing"
+    for token in result.split()[:-1]:
+        float(token)  # raises if we emitted something that is not a number
 
 
 # --- end to end over a document ----------------------------------------------

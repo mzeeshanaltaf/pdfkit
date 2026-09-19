@@ -14,7 +14,7 @@ const PRINCIPLES = [
   {
     icon: FolderX,
     title: "The server keeps nothing",
-    body: "Compression, OCR, passwords and image extraction need real tooling, so those files are sent, processed and deleted in the same request.",
+    body: "Compression, OCR, passwords, image extraction and the Word and Markdown converters need real tooling, so those files are sent, processed and deleted in the same request.",
   },
   {
     icon: UserX,

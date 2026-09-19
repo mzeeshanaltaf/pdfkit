@@ -37,7 +37,7 @@ const REASONS = [
   {
     icon: Server,
     title: "A tool you want",
-    body: "There are ten tools today. If the one you reach for is missing, say so — that is how the list grows.",
+    body: "If the tool you reach for is missing, say so — that is how the list grows.",
   },
   {
     icon: Lock,

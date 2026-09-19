@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
-from tests.conftest import requires_ghostscript, upload, zip_names
+from tests.conftest import ink_on_first_page, requires_ghostscript, upload, zip_names
 
 pytestmark = requires_ghostscript
 
@@ -94,6 +94,79 @@ def test_shrinks_a_vector_pdf_that_ghostscript_makes_bigger(
     assert response.status_code == 200
     assert len(response.content) < len(vector_pdf) * 0.9
     assert len(PdfReader(io.BytesIO(response.content)).pages) == 3
+
+
+def test_shrinks_a_document_that_embeds_a_whole_font(
+    client: TestClient, fat_font_pdf: bytes
+) -> None:
+    """A Word document with one emoji in it is 4 MB of unused Segoe UI Emoji.
+
+    Ghostscript reports that it subset the font and takes about 4% off; the
+    glyph-level subset takes 98%.
+    """
+    response = client.post(
+        "/compress",
+        files=[upload("profile.pdf", fat_font_pdf)],
+        data={"level": "recommended"},
+    )
+    assert response.status_code == 200
+    assert len(response.content) < len(fat_font_pdf) / 5
+    assert "Hello" in PdfReader(io.BytesIO(response.content)).pages[0].extract_text()
+
+
+def test_a_font_subset_that_changes_the_page_is_thrown_away(
+    client: TestClient, fat_font_pdf: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate that stands between a scanning mistake and somebody's text.
+
+    Here subsetting "succeeds" but drops every glyph. Nothing downstream would
+    catch that — the file opens, the text still extracts from /ToUnicode — so
+    the render comparison is the only thing that can, and the request has to
+    come back with the original rather than a page of blanks.
+    """
+    from app.services import compress as service
+
+    def wreck(source, destination, *, deadline=None):
+        import io as _io
+
+        from fontTools.subset import Options, Subsetter
+        from fontTools.ttLib import TTFont
+        from pypdf import PdfWriter
+        from pypdf.generic import NameObject, NumberObject
+
+        writer = PdfWriter(clone_from=str(source))
+        scan = service.fonts._Scan(writer)
+        scan.run()
+        for entry in scan.programs.values():
+            font = entry.font()
+            options = Options()
+            options.retain_gids = True
+            subsetter = Subsetter(options=options)
+            subsetter.populate(glyphs=[])  # keep nothing at all
+            subsetter.subset(font)
+            out = _io.BytesIO()
+            font.save(out)
+            import zlib as _zlib
+
+            packed = _zlib.compress(out.getvalue(), 9)
+            entry.stream._data = packed
+            entry.stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+            entry.stream[NameObject("/Length")] = NumberObject(len(packed))
+        with destination.open("wb") as handle:
+            writer.write(handle)
+        return True
+
+    monkeypatch.setattr(service.fonts, "subset", wreck)
+    response = client.post(
+        "/compress",
+        files=[upload("profile.pdf", fat_font_pdf)],
+        data={"level": "recommended"},
+    )
+    assert response.status_code == 200
+    # Size proves nothing here — with the wrecked subset thrown out, Ghostscript
+    # subsets this (perfectly ordinary) font itself and the file is small either
+    # way. What matters is that the word is still on the page.
+    assert ink_on_first_page(response.content) > 0
 
 
 def test_the_lossless_level_still_shrinks_a_vector_pdf(

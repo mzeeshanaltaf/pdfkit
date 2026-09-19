@@ -56,6 +56,10 @@ const MESSAGES: Record<string, string> = {
   server_busy: "The server is busy with other documents. Try again in a moment.",
   processing_timed_out: "This file took too long to process, so it was stopped.",
   ocr_unavailable: "OCR is not available on this server right now.",
+  needs_ocr:
+    "This PDF is a scan, so there is no text to convert. Turn OCR on and try again.",
+  document_unreadable: "This PDF could not be read well enough to convert.",
+  document_too_complex: "This PDF is too large or complex to convert.",
 };
 
 function cancelled(message: string): ApiError {

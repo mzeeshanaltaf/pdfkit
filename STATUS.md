@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages)
+Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages + two new tools)
 
 ## Current phase
 
@@ -8,10 +8,133 @@ Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages)
 cross-tool consistency and accessibility all went through the full verification matrix, and
 the three defects it turned up are fixed. **The app is deploy-ready.**
 
-An **SEO pass** and then a **Contact + Privacy** addition ran after Phase 6 (see below).
-Still deploy-ready.
+An **SEO pass**, a **Contact + Privacy** addition and then **two new tools** ran after
+Phase 6 (see below). Still deploy-ready.
 
 Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](docs/phases/).
+Two items were added to that phase doc by the conversion work: the body-size check now
+also covers the two new endpoints, and there is a **new proxy read-timeout check**, because
+PDF to Word with OCR can legitimately hold one request open for several minutes.
+
+## PDF to Word and PDF to Markdown (2026-09-19)
+
+Two tools added, taking the registry to **12**. Both are backend tools and both follow the
+existing backend-tool pattern exactly, so nothing about `ToolShell`, `lib/api.ts` or the SEO
+layer changed shape.
+
+| Tool | Route | Endpoint | Engine |
+|---|---|---|---|
+| PDF to Word | `/pdf-to-word` | `POST /convert/word` | `pdf2docx convert`, via its CLI |
+| PDF to Markdown | `/pdf-to-markdown` | `POST /convert/markdown` | anydoc, via a subprocess shim |
+
+Both take an `ocr` field (`off` / `auto`) and the same `languages` field `/ocr` takes.
+
+### The two findings that shaped the design
+
+Both were found by running the tools, not by reading docs, and both are the reason the code
+looks the way it does. **Do not "simplify" either one away.**
+
+1. **anydoc never accepts an OCR'd page.** It reports `NeedsOcrError` with the exact 1-based
+   page numbers, and OCRmyPDF's text layer does *not* change its mind — `pdftotext` and pypdf
+   both read the recognised text out of the same file, but anydoc still classifies the page
+   as a scan. So "OCR it and convert again" does not work, and the plan's original two-pass
+   design had to grow a page-level stage.
+2. **pdf2docx ignores invisible text.** OCRmyPDF writes its layer in rendering mode 3 so the
+   page still looks like the scan; pdf2docx is a *layout* parser, so by its measure the text
+   is not there, and a scanned PDF converted to Word came back as a picture with **zero**
+   characters in it. Making the text visible and dropping the page image behind it turns the
+   same file into 1650 characters of editable Word content.
+
+### How each tool works
+
+**PDF to Markdown** (`app/services/markdown.py`)
+
+1. Convert the whole document in one anydoc call. If it succeeds — the born-digital case, and
+   the common one — that is the best result available, because a table or paragraph spanning
+   a page break stays in one piece. Verified: the 5-page text fixture comes back with real
+   `#` and `##` headings.
+2. On `NeedsOcr` with `ocr=auto`: OCR the whole file once with `--skip-text`, then assemble
+   page by page — the pages anydoc named are filled in from the recognised text layer
+   (`text_layer.page_texts`, i.e. pypdf), and every other page is split out with pypdf and
+   converted by anydoc on its own so its structure survives.
+3. The per-page conversions share **one** subprocess. The shim takes a batch, so a 50-page
+   mixed document pays for one interpreter start, not fifty.
+4. A page neither route can read becomes `_Page N could not be read._` rather than vanishing.
+   If *every* page is unreadable it is a `422 needs_ocr` instead, because there is no
+   document to hand back.
+
+**PDF to Word** (`app/services/word.py`) — `ensure_readable`, then with `ocr=auto`:
+`pages_without_text` on the **input** (after OCR every page has text, so asking later tells
+you nothing) → `ocr_to_path` → `reveal_text` on just those pages → `pdf2docx convert`.
+`reveal_text` returning False is not an error; the untouched OCR'd file is converted instead.
+
+### Decisions
+
+- **pdf2docx runs as a subprocess, never imported.** `runner.py` can only enforce a timeout
+  on something it can kill, and it keeps the AGPL PyMuPDF engine in its own process — the
+  same posture the image already has with Ghostscript. Same reasoning for the anydoc shim,
+  which additionally means a panic in its Rust core costs one request, not the event loop.
+- **`app/tools/anydoc_cli.py` reports per-file status as JSON lines and exits 0.** The exit
+  code says whether the *tool ran*; whether a given document converted is per-item data. That
+  is what lets one process convert a batch of pages and report a different outcome for each.
+- **`ocr` defaults differ per tool, deliberately.** Word defaults to `off` (matching the
+  iLovePDF reference screenshot) because pdf2docx produces a document either way. Markdown
+  defaults to `auto` because anydoc refuses a scan outright, so defaulting it off would turn
+  the commonest scanned document into an error instead of a result.
+- **`reveal_text` only touches pages that had no text of their own**, so a figure on a
+  born-digital page is never stripped out from under its caption.
+- **Download names drop the suffix**: `report.pdf` → `report.docx`, not `report-word.docx`.
+  The extension already changed, so there is nothing to disambiguate (`convert_name` in
+  `responses.py`, beside the existing `derive_name`).
+- **The scanned-file hint nudges, it does not switch modes.** `useScannedProbe` samples up to
+  8 pages with pdf.js `getTextContent` and the panel says "one of these files looks like a
+  scan". Turning OCR on by itself would silently multiply the wait.
+
+### Frontend
+
+- `lib/tools.ts` (+2 entries, `ToolId` union), `lib/seo/tool-content.ts` (+2 `ToolSeo`
+  entries — the `Record<ToolId, ToolSeo>` type makes this a compile error until it is done),
+  two routes, two workspaces under `components/tools/`.
+- **Shared, new**: `components/tool/ocr-language-picker.tsx` (lifted out of `ocr-options.tsx`
+  so OCR, Word and Markdown share one picker), `components/tool/ocr-mode-cards.tsx`,
+  `components/tool/use-scanned-probe.ts`, `lib/pdf/text-layer.ts`.
+  `use-ocr-languages.ts` **moved** from `components/tools/ocr/` to `components/tool/`.
+- Counts that were written out in prose are now derived from `TOOLS.length`: `llms.txt` and
+  the footer. The contact page's "there are ten tools" line was reworded to not carry a
+  number at all.
+
+### A real bug this found
+
+`useScannedProbe` originally cleared a `live` flag in its effect cleanup. `files` gets a new
+identity the moment a page count or thumbnail arrives, so the effect re-ran while the first
+probe was still going, cancelled it, and then skipped re-probing because the id was already
+in `started` — the answer was discarded and never recomputed, and the banner never appeared.
+Only unmounting may invalidate a probe now. The comment in the file says so; keep it.
+
+### Verification
+
+`docker compose --profile test run --rm backend-tests` → **92 passed** (53 before this work,
+plus `tests/test_convert.py`). The tests that matter: a mixed document (3 born-digital pages
++ 1 scan) comes back with both "Page 1 of 3" from anydoc *and* the OCR'd text, and no
+"could not be read" marker; and the Word scan test asserts **both** halves — no text without
+OCR, text with it — so a regression in `reveal_text` cannot pass silently.
+
+Against the **runtime** image with the committed fixtures: born-digital Markdown carries real
+headings; `sample-scanned.pdf` with `ocr=off` → `422 needs_ocr`, with `ocr=auto` → recognised
+text in 1.8 s; Word gives 4170 characters on the text fixture, 0 on the scan without OCR and
+1650 with it (and the OCR'd .docx is 38 KB against 238 KB, because the page image is gone);
+both endpoints 422 on `sample-protected.pdf`; two files zip as `pdfkit-word.zip` /
+`pdfkit-markdown.zip`; `/tmp/pdfkit` empty afterwards.
+
+Frontend: `npm run lint`, `npx tsc --noEmit` and a clean `npm run build` (26 routes) all
+pass. Both tools were then driven through headless Chromium against `next start` + the
+Dockerised backend, capturing `URL.createObjectURL` and reading the downloaded bytes back in
+Node — 10/10 checks, plus 6/6 regression checks covering the landing grid (12 links), the
+refactored OCR tool end to end, the non-PDF guard (0 backend requests) and the
+encrypted-PDF guard. Both new routes serve exactly one `h1`, ~920 crawlable words and one
+JSON-LD block, and neither overflows at 390 px.
+
+The harness lives in the session scratchpad, not the repo, as in Phase 6.
 
 ## Contact & Privacy pages (2026-09-19)
 
@@ -115,6 +238,8 @@ missing, every canonical, OG URL, sitemap entry and llms.txt link ships pointing
 | Protect PDF | `/protect-pdf` | ✅ real, `POST /protect` |
 | Unlock PDF | `/unlock-pdf` | ✅ real, `POST /unlock`, one request per file |
 | OCR PDF | `/ocr-pdf` | ✅ real, `POST /ocr` + `GET /ocr/languages` |
+| PDF to Word | `/pdf-to-word` | ✅ real, `POST /convert/word` (pdf2docx) |
+| PDF to Markdown | `/pdf-to-markdown` | ✅ real, `POST /convert/markdown` (anydoc) |
 
 ## Phase checklist
 
@@ -617,7 +742,9 @@ levels with nothing to downsample.
 - **When adding a backend endpoint**: service in `app/services/`, thin router in
   `app/routers/`, register it in `app/routers/__init__.py`'s `ROUTERS`. Never call
   `asyncio.create_subprocess_exec` directly — go through `app/services/runner.py`, which owns
-  the concurrency limit, the timeout and stderr sanitising.
+  the concurrency limit, the timeout and stderr sanitising. That applies to a blocking
+  *library* call too: if it cannot be interrupted, wrap it in a module under `app/tools/` and
+  spawn it, as `anydoc_cli.py` does — a thread cannot be killed when the timeout expires.
 - **The browser-tool pattern** (`merge|rotate|split`, `pdf-to-jpg|organize|page-numbers`): a
   `<tool>-workspace.tsx` holding whatever state `process` needs and rendering `<ToolShell>`,
   a `<tool>-options.tsx` rendered inside the shell that reads the file list with
@@ -968,3 +1095,80 @@ original bytes back; encrypted input still 422s before any tool runs.
 (byte-identical output for the minimal text fixture, which the rewriter now shrinks 14%).
 It is replaced by `test_never_hands_back_a_bigger_file` plus a second-pass test, which pin
 the invariant that actually matters. Suite: 77 passed.
+
+## Fix 2: compression barely touched a text-only PDF (post-Phase 6)
+
+**Reported:** `PDFKit Samples/BrainyDocs - company profile.pdf` — a two-page Word
+document — compressed by 4%, where iLovePDF got ~97%.
+
+**Cause:** 96.8% of that 4 MB file is a single object: a `/FontFile2` with
+`/Length1 7776076`. Word embedded the *entire* Segoe UI Emoji because the document
+contains one emoji, and 91.7% of that font program is its `COLR` table (colour
+layers for thousands of emoji) plus `CPAL`. The actual outlines, `glyf`, are 1,524
+bytes. Ghostscript reports the font as subsetted — `pdffonts` shows the `ABCDEF+`
+prefix on its output — and still writes 3.85 MB, because its subsetter does not
+understand `COLR` and copies it through whole. `mutool clean -gggg` made the file
+*bigger*. No Ghostscript flag can fix this.
+
+New `app/services/fonts.py` subsets embedded TrueType/OpenType programs with
+fontTools, driven by a scan of what the document actually draws: **4,073,060 →
+43,295 bytes, 98.9%**, rendering pixel for pixel identical. It runs before the
+other two passes, since fewer font bytes is a better input for either.
+
+Three things here are load-bearing and must not be "simplified" away:
+
+- **`retain_gids=True`.** A PDF names glyphs by number. A subsetter normally
+  renumbers them, and then the content streams point at whatever moved into the
+  old slots. The first working version did exactly this and every en-dash in the
+  sample document came out blank — while the file stayed valid and `pdftotext`
+  still returned the right characters, because extraction reads `/ToUnicode`, not
+  the font. `test_the_used_glyphs_keep_their_outlines_and_their_numbers` pins it.
+- **Refuse rather than guess.** A content stream that will not parse, a CID font
+  that is not Identity-H, a character code that cannot be placed in the font —
+  each means that font is left alone. Bare CFF (`/FontFile3 /Type1C`) and Type 1
+  are skipped entirely; they are not sfnt containers and are small in practice.
+- **The render check.** `_renders_the_same` rasterises up to 8 pages of the input
+  and the subsetted output and compares them, and throws the subset away if they
+  differ. The failure mode this exists for — a content stream the scan never
+  reached looks exactly like a font with no glyphs in use — produces a blank page
+  in a valid file, which nothing else notices.
+
+### A corruption bug in Fix 1, found on the way
+
+Compressing this file surfaced `Syntax Error: Unknown operator 'e-06'` in the
+output of the *stream rewriter* shipped in 9b66624. The guard that stops rounding
+from collapsing a small number to zero fell back to `f"{value:.6g}"`, which emits
+**scientific notation** below 1e-5 — and a content stream has no exponent grammar,
+so a reader takes `e-06` as an operator and the operand it should have been is
+gone. Every `re`/`c`/`cm` after it loses arguments. The file still opens.
+
+This shipped because the one test for that branch picked 0.000123, which is just
+above where `%g` switches to exponents. The replacement sweeps magnitudes from
+1e-1 to 1e-11 and asserts every emitted token matches the PDF number grammar, and
+`_rounder` now refuses to emit anything that is not a plain decimal *and* shorter
+than what it replaced — so it cannot create a token, only shorten one.
+
+`_parses_cleanly` was added as the matching end-to-end gate: `pdftotext` walks
+every operator, so it catches this whole class. It runs on the rewriter's output
+(8–18 ms on an ordinary document, 6.4 s on the 50 MB vector one) and only parses
+the *source* as well when the candidate looks bad, so the expensive second pass
+happens only on a real failure — and a document that already had content-stream
+errors before we touched it does not lose compression over them.
+
+### Measured after both fixes
+
+| File | less | recommended | extreme |
+|---|---|---|---|
+| BrainyDocs profile (4 MB, Word + emoji) | 98.9% | 98.9% | 98.9% |
+| Folksam MC (15 MB, vector) | 23.9% | 25.3% | 25.4% |
+| Folksam Hem (50 MB, vector) | 23.7% | 25.1% | — |
+| Generated 200 dpi scan (6.8 MB) | 48.8% | 71.3% | 90.6% |
+
+Every delivered file: zero `Syntax Error`s from `pdftotext`, page count preserved,
+text extraction identical, and the rendered pages identical (brainy less/recommended
+0.0000%, hem 0.0034%, mc 0.0126%). The scan's 20% page difference is the image
+downsampling doing its job. Suite: 106 passed.
+
+Both new gates were checked by breaking the code they guard and confirming the
+test fails — worth repeating if either is ever touched, since a safety check that
+cannot fail is worse than none.

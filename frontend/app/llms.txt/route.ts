@@ -15,6 +15,7 @@ import { TOOLS, toolHref } from "@/lib/tools";
 export const dynamic = "force-static";
 
 function body(): string {
+  const browserCount = TOOLS.filter((tool) => tool.runsIn === "browser").length;
   const runsIn = {
     browser: "runs entirely in the browser, file never uploaded",
     backend: `runs on the server, file processed and deleted in the same request, ${MAX_UPLOAD_LABEL} limit`,
@@ -26,11 +27,12 @@ function body(): string {
     "",
     `> ${APP_DESCRIPTION}`,
     "",
-    `${APP_NAME} is a self-hosted PDF toolkit with ten tools. There are no user accounts, no`,
-    "sign-up and no stored files. Six of the ten tools do their work inside the browser tab with",
-    "pdf-lib and pdf.js, so those documents never leave the visitor's computer. The remaining",
-    "tools need native binaries (Ghostscript, qpdf, Tesseract) and therefore upload the file,",
-    "process it, and delete it within the same HTTP request. Nothing is retained either way.",
+    `${APP_NAME} is a self-hosted PDF toolkit with ${TOOLS.length} tools. There are no user`,
+    `accounts, no sign-up and no stored files. ${browserCount} of the ${TOOLS.length} tools do`,
+    "their work inside the browser tab with pdf-lib and pdf.js, so those documents never leave",
+    "the visitor's computer. The remaining tools need native binaries (Ghostscript, qpdf,",
+    "Tesseract, and the document converters) and therefore upload the file, process it, and",
+    "delete it within the same HTTP request. Nothing is retained either way.",
     "",
     "## Tools",
     "",

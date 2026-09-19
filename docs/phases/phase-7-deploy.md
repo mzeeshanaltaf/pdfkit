@@ -16,9 +16,10 @@ Phase 6 complete — app fully polished and passing the full local manual matrix
 5. Env vars in Coolify:
    - `NEXT_PUBLIC_API_URL=https://api.pdfkit.zeeshanai.cloud` (build-time — frontend must be rebuilt if this changes).
    - `CORS_ORIGINS=https://pdfkit.zeeshanai.cloud` on the backend.
-6. **Verify Traefik doesn't cap request bodies below 50 MB** — this is a known gotcha with Coolify's default Traefik config and will silently break large-file uploads to Compress/OCR/Protect/Unlock/Extract-images.
-7. Trigger first deploy, confirm both containers come up healthy.
-8. Update root `README.md` with the final deploy notes (domains, how to redeploy, where logs live).
+6. **Verify Traefik doesn't cap request bodies below 50 MB** — this is a known gotcha with Coolify's default Traefik config and will silently break large-file uploads to Compress/OCR/Protect/Unlock/Extract-images/PDF-to-Word/PDF-to-Markdown.
+7. **Verify the proxy's read/idle timeout clears the longest job.** PDF to Word with OCR runs two subprocesses back to back — recognition (`OCR_TIMEOUT_SECONDS`, 600) then layout rebuilding (`WORD_TIMEOUT_SECONDS`, 300) — so a long scan can hold one request open for many minutes with no bytes flowing. A proxy that gives up first turns that into a "Could not reach the server" toast with no server-side error to find. Either raise the timeout or lower the two backend ones so the server is always the thing that gives up first, with a `504 processing_timed_out` the UI already knows how to show.
+8. Trigger first deploy, confirm both containers come up healthy.
+9. Update root `README.md` with the final deploy notes (domains, how to redeploy, where logs live).
 
 ## Verification
 - `https://pdfkit.zeeshanai.cloud` loads the landing page over HTTPS with a valid cert.

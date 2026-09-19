@@ -26,6 +26,10 @@ TIMEOUTS: dict[str, int] = {
     "unlock": int(os.getenv("UNLOCK_TIMEOUT_SECONDS", "60")),
     "ocr": int(os.getenv("OCR_TIMEOUT_SECONDS", "600")),
     "images": int(os.getenv("IMAGES_TIMEOUT_SECONDS", "180")),
+    # pdf2docx rebuilds the layout page by page, so it scales with the
+    # document rather than with its byte count.
+    "word": int(os.getenv("WORD_TIMEOUT_SECONDS", "300")),
+    "markdown": int(os.getenv("MARKDOWN_TIMEOUT_SECONDS", "120")),
     "probe": int(os.getenv("PROBE_TIMEOUT_SECONDS", "20")),
 }
 

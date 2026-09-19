@@ -4,8 +4,8 @@ import type { ToolId } from "@/lib/tools";
  * Long-form, server-rendered copy for each tool route.
  *
  * Why this exists: every tool *workspace* is loaded with `ssr: false` (it reads `File`
- * objects and renders to canvas, so it cannot be server-rendered). That left the ten tool
- * pages serving ~13 words of HTML and no heading at all — they are the pages that should
+ * objects and renders to canvas, so it cannot be server-rendered). That left every tool
+ * page serving ~13 words of HTML and no heading at all — they are the pages that should
  * rank for "merge pdf", "compress pdf" and friends. This module is the crawlable half of
  * those pages: `ToolSeoSection` renders it on the server, below the workspace.
  *
@@ -263,7 +263,7 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
     faqs: [
       {
         q: "How much smaller will my PDF get?",
-        a: "It depends what is inside it. Scans and image-heavy documents often shrink by half or more. Documents made of vector drawing, such as anything printed through a Print to PDF driver, typically lose about a quarter. A file that is already lean may barely change, and the result screen tells you when that happens rather than claiming a saving.",
+        a: "It depends what is inside it. Scans and image-heavy documents often shrink by half or more. Word documents that embed their fonts whole — a single emoji can drag in several megabytes of font — can lose almost everything, sometimes 98%. Documents made of vector drawing, such as anything printed through a Print to PDF driver, typically lose about a quarter. A file that is already lean may barely change, and the result screen tells you when that happens rather than claiming a saving.",
       },
       {
         q: "Is my file kept on the server?",
@@ -318,6 +318,90 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
       {
         q: "Why did extract mode return nothing?",
         a: "The PDF has no embedded bitmap images. A document built from text and vector drawings has none to pull out, so use page mode instead.",
+      },
+    ],
+  },
+
+  "pdf-to-word": {
+    title: "PDF to Word: Convert PDF to Editable DOCX",
+    h1: "Convert PDF to Word",
+    howTo: "How to convert a PDF to Word",
+    intro: [
+      "PDF to Word rebuilds a PDF as an editable Word document. Paragraphs stay paragraphs, tables stay tables and images keep their place, so you can edit the result rather than retype it.",
+      "Conversion runs on the server, where the file is processed and deleted within the same request. Files are capped at 50 MB each.",
+    ],
+    steps: [
+      {
+        title: "Add your PDFs",
+        body: "Drop in one file or several, up to 50 MB each.",
+      },
+      {
+        title: "Choose whether to use OCR",
+        body: "A PDF you can select text in converts without OCR. A scan has no text to read, so turn OCR on and the words are recognised first.",
+      },
+      {
+        title: "Convert and download",
+        body: "The .docx downloads as soon as the job finishes and opens in Word, Google Docs or LibreOffice.",
+      },
+    ],
+    faqs: [
+      {
+        q: "Will the layout survive the conversion?",
+        a: "Mostly. Paragraphs, headings, tables and images are rebuilt as real Word content. A heavily designed page with unusual columns or overlapping artwork will come out approximately, not exactly.",
+      },
+      {
+        q: "My PDF is a scan and the Word file came out empty. Why?",
+        a: "A scanned page is a picture, with no text to convert. Turn OCR on and the page is read first, so the Word document contains editable words instead of an image.",
+      },
+      {
+        q: "Can I edit the result?",
+        a: "Yes. The output is a normal .docx, so text, tables and styles can all be changed like any other Word document.",
+      },
+      {
+        q: "Is my document kept on the server?",
+        a: "No. It is converted and deleted within the same request. There is no account and nothing is stored.",
+      },
+    ],
+  },
+
+  "pdf-to-markdown": {
+    title: "PDF to Markdown: Convert a PDF to Clean .md",
+    h1: "Convert PDF to Markdown",
+    howTo: "How to convert a PDF to Markdown",
+    intro: [
+      "PDF to Markdown turns a document into clean Markdown, keeping the headings, lists and tables it already had. It is the quickest way to get a PDF into notes, a wiki, a static site or a prompt.",
+      "Pages that are scans have no text to read, so those are recognised with OCR first and folded into the same file. The result downloads as a single .md.",
+    ],
+    steps: [
+      {
+        title: "Add a PDF",
+        body: "Drop in one file or several, up to 50 MB each.",
+      },
+      {
+        title: "Leave OCR on for scans",
+        body: "Pages with real text are converted directly. Pages that are images are read with OCR, so a mixed document comes back complete.",
+      },
+      {
+        title: "Download the Markdown",
+        body: "One file downloads as .md. Several arrive together as a zip.",
+      },
+    ],
+    faqs: [
+      {
+        q: "What does the Markdown keep?",
+        a: "Headings, paragraphs, lists and tables are carried across as Markdown. Visual styling such as fonts, colours and exact spacing is not, which is the point of Markdown.",
+      },
+      {
+        q: "Does it work on scanned PDFs?",
+        a: "Yes. A page with no text layer is read with OCR and its text is folded into the document in the right place. Recognised pages come back as plain paragraphs, because a scan has no structure to recover.",
+      },
+      {
+        q: "Why would I want Markdown instead of Word?",
+        a: "Markdown is plain text, so it goes straight into a repository, a note-taking app, a static site generator or a language model without carrying formatting baggage.",
+      },
+      {
+        q: "Is my file uploaded?",
+        a: "Yes, this tool needs the server. The file is converted and deleted within the same request, and nothing is retained.",
       },
     ],
   },

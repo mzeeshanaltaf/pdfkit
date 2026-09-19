@@ -1,8 +1,10 @@
 import type { LucideIcon } from "lucide-react";
 import {
   FileArchive,
+  FileCode,
   FileImage,
   FileSearch,
+  FileText,
   Hash,
   LayoutGrid,
   Lock,
@@ -34,7 +36,9 @@ export type ToolId =
   | "page-numbers"
   | "protect"
   | "unlock"
-  | "ocr";
+  | "ocr"
+  | "pdf-to-word"
+  | "pdf-to-markdown";
 
 /**
  * Where the work happens. `browser` tools never upload; `backend` tools post the file to
@@ -152,6 +156,32 @@ export const TOOLS: Tool[] = [
     multiple: true,
     ctaLabel: "Convert to JPG",
     runsIn: "hybrid",
+  },
+  {
+    id: "pdf-to-word",
+    slug: "pdf-to-word",
+    name: "PDF to Word",
+    tagline: "Turn a PDF into an editable document.",
+    description:
+      "Convert a PDF into an editable Word document, rebuilding its paragraphs, tables and images.",
+    icon: FileText,
+    accent: "amber",
+    multiple: true,
+    ctaLabel: "Convert to Word",
+    runsIn: "backend",
+  },
+  {
+    id: "pdf-to-markdown",
+    slug: "pdf-to-markdown",
+    name: "PDF to Markdown",
+    tagline: "Get clean Markdown out of a document.",
+    description:
+      "Convert a PDF into clean Markdown, keeping its headings, lists and tables, ready for notes or docs.",
+    icon: FileCode,
+    accent: "amber",
+    multiple: true,
+    ctaLabel: "Convert to Markdown",
+    runsIn: "backend",
   },
   {
     id: "ocr",

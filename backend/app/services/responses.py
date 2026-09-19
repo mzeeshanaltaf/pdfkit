@@ -19,6 +19,10 @@ from app.deps import UploadBatch, display_name, sanitise_filename
 
 ZIP_MEDIA_TYPE = "application/zip"
 PDF_MEDIA_TYPE = "application/pdf"
+DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+MARKDOWN_MEDIA_TYPE = "text/markdown; charset=utf-8"
 
 
 @dataclass(slots=True)
@@ -34,6 +38,17 @@ def derive_name(source_name: str, suffix: str, extension: str = "pdf") -> str:
     """``sample.pdf`` + ``compressed`` → ``sample-compressed.pdf``."""
     stem = Path(sanitise_filename(source_name)).stem
     return f"{stem}-{suffix}.{extension}"
+
+
+def convert_name(source_name: str, extension: str) -> str:
+    """``report.pdf`` + ``docx`` → ``report.docx``.
+
+    Unlike :func:`derive_name` there is no suffix, because the extension has
+    already changed: ``report-word.docx`` would be noise, and the name cannot
+    collide with the input the way ``report-compressed.pdf`` could.
+    """
+    stem = Path(sanitise_filename(source_name)).stem
+    return f"{stem}.{extension}"
 
 
 def unique_names(outputs: Sequence[OutputFile]) -> list[str]:

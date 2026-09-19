@@ -93,6 +93,14 @@ def _end_of_string(buf: bytes, start: int) -> int:
     return length
 
 
+# What a rewritten number is allowed to look like. A content stream has no
+# exponent notation, so a token like `1.2e-06` is not a small number there — it
+# is the operator `e-06` with a stray `1.2` in front of it, and it breaks the
+# operator that was supposed to consume the operand. Nothing leaves the rounder
+# unless it matches this.
+_PLAIN_NUMBER = re.compile(rb"\A[+-]?(?:\d+\.?\d*|\.\d+)\Z")
+
+
 def _rounder(precision: int):
     """A substitution callback that shortens a number to ``precision`` decimals."""
 
@@ -103,13 +111,15 @@ def _rounder(precision: int):
         except ValueError:  # pragma: no cover — the pattern cannot produce this
             return original
         text = f"{value:.{precision}f}".rstrip("0").rstrip(".")
-        if text in ("", "-", "-0", "0", "+0"):
+        if value != 0 and float(text or 0) == 0:
             # Rounding a small non-zero number away would collapse a scale
-            # factor or a hairline offset to zero and move the drawing. Keep it,
-            # with enough significant digits to stay harmless.
-            text = "0" if value == 0 else f"{value:.6g}"
-        candidate = text.encode()
-        return candidate if len(candidate) < len(original) else original
+            # factor or a hairline offset to zero and move the drawing, so this
+            # one keeps the length it came with.
+            return original
+        candidate = (text or "0").encode()
+        if len(candidate) >= len(original) or not _PLAIN_NUMBER.match(candidate):
+            return original
+        return candidate
 
     return shorten_one
 
@@ -149,13 +159,14 @@ def shorten(buf: bytes, precision: int | None = None) -> bytes:
 # --- finding the content streams ---------------------------------------------
 
 
-def _resolve(obj: object) -> object:
+def resolve(obj: object) -> object:
+    """Follow an indirect reference, or hand back what was given."""
     return obj.get_object() if isinstance(obj, IndirectObject) else obj
 
 
-def _values(obj: object) -> list:
+def values(obj: object) -> list:
     """The values of a (possibly indirect) dictionary, or nothing."""
-    resolved = _resolve(obj)
+    resolved = resolve(obj)
     return list(resolved.values()) if isinstance(resolved, DictionaryObject) else []
 
 
@@ -165,7 +176,7 @@ def _stored_size(stream: StreamObject) -> int:
     if isinstance(data, (bytes, bytearray)):
         return len(data)
     try:
-        return int(_resolve(stream.get("/Length")))  # type: ignore[arg-type]
+        return int(resolve(stream.get("/Length")))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0
 
@@ -181,6 +192,7 @@ class _Walk:
     def __init__(self) -> None:
         self.content: list[StreamObject] = []
         self.image_bytes = 0
+        self.font_bytes = 0
         self._seen: set[tuple[int, int] | int] = set()
         self._visited_resources: set[int] = set()
 
@@ -191,7 +203,7 @@ class _Walk:
         if key in self._seen:
             return None
         self._seen.add(key)
-        resolved = _resolve(obj)
+        resolved = resolve(obj)
         return resolved if isinstance(resolved, StreamObject) else None
 
     def _take_content(self, obj: object) -> StreamObject | None:
@@ -206,20 +218,20 @@ class _Walk:
         self.image_bytes += _stored_size(stream)
         for key in ("/SMask", "/Mask"):
             mask = stream.get(key)
-            target = _resolve(mask)
+            target = resolve(mask)
             if isinstance(target, StreamObject) and self._first_visit(mask) is not None:
                 self.image_bytes += _stored_size(target)
 
     def _resources(self, resources: object) -> None:
-        resolved = _resolve(resources)
+        resolved = resolve(resources)
         if not isinstance(resolved, DictionaryObject):
             return
         if id(resolved) in self._visited_resources:
             return
         self._visited_resources.add(id(resolved))
 
-        for xobject in _values(resolved.get("/XObject")):
-            target = _resolve(xobject)
+        for xobject in values(resolved.get("/XObject")):
+            target = resolve(xobject)
             if not isinstance(target, StreamObject):
                 continue
             subtype = target.get("/Subtype")
@@ -228,8 +240,8 @@ class _Walk:
             elif subtype == "/Form" and self._take_content(xobject) is not None:
                 self._resources(target.get("/Resources"))
 
-        for pattern in _values(resolved.get("/Pattern")):
-            target = _resolve(pattern)
+        for pattern in values(resolved.get("/Pattern")):
+            target = resolve(pattern)
             # PatternType 1 is a tiling pattern, whose stream is drawing
             # operators. PatternType 2 is a shading dict with no stream at all.
             if (
@@ -239,36 +251,58 @@ class _Walk:
             ):
                 self._resources(target.get("/Resources"))
 
-        for font in _values(resolved.get("/Font")):
-            target = _resolve(font)
-            if isinstance(target, DictionaryObject) and target.get("/Subtype") == "/Type3":
-                for glyph in _values(target.get("/CharProcs")):
+        for font in values(resolved.get("/Font")):
+            target = resolve(font)
+            if not isinstance(target, DictionaryObject):
+                continue
+            self._take_font(target)
+            if target.get("/Subtype") == "/Type3":
+                for glyph in values(target.get("/CharProcs")):
                     self._take_content(glyph)
                 self._resources(target.get("/Resources"))
 
+    def _take_font(self, font: DictionaryObject) -> None:
+        """Size the embedded font programs, whatever flavour they are."""
+        holders: list[object] = [font]
+        if font.get("/Subtype") == "/Type0":
+            holders = values(font.get("/DescendantFonts")) or [
+                item for item in (resolve(font.get("/DescendantFonts")) or []) if item is not None
+            ]
+        for holder in holders:
+            descriptor = resolve(resolve(holder).get("/FontDescriptor")) if isinstance(
+                resolve(holder), DictionaryObject
+            ) else None
+            if not isinstance(descriptor, DictionaryObject):
+                continue
+            for key in ("/FontFile", "/FontFile2", "/FontFile3"):
+                program = descriptor.get(key)
+                target = resolve(program)
+                if isinstance(target, StreamObject) and self._first_visit(program) is not None:
+                    self.font_bytes += _stored_size(target)
+
     def _annotations(self, page: object) -> None:
-        annots = _resolve(_resolve(page).get("/Annots"))
+        annots = resolve(resolve(page).get("/Annots"))
         if not isinstance(annots, (ArrayObject, list)):
             return
         for annot in annots:
-            resolved = _resolve(annot)
+            resolved = resolve(annot)
             if not isinstance(resolved, DictionaryObject):
                 continue
-            for appearance in _values(resolved.get("/AP")):
-                target = _resolve(appearance)
+            for appearance in values(resolved.get("/AP")):
+                target = resolve(appearance)
                 if isinstance(target, StreamObject):
                     if self._take_content(appearance) is not None:
                         self._resources(target.get("/Resources"))
                     continue
                 # /AP /N may instead be a dictionary of named appearance states.
-                for state in _values(appearance):
-                    inner = _resolve(state)
+                for state in values(appearance):
+                    inner = resolve(state)
                     if isinstance(inner, StreamObject) and self._take_content(state):
                         self._resources(inner.get("/Resources"))
 
     def document(self, document: PdfReader | PdfWriter) -> _Walk:
         for page in document.pages:
-            contents = _resolve(page.get("/Contents"))
+            contents = resolve(page.get("/Contents"))
             if isinstance(contents, (ArrayObject, list)):
                 for part in contents:
                     self._take_content(part)
@@ -289,6 +323,7 @@ class Survey:
     file_size: int
     image_bytes: int
     content_bytes: int
+    font_bytes: int = 0
 
     @property
     def image_share(self) -> float:
@@ -297,6 +332,10 @@ class Survey:
     @property
     def content_share(self) -> float:
         return self.content_bytes / self.file_size if self.file_size else 0.0
+
+    @property
+    def font_share(self) -> float:
+        return self.font_bytes / self.file_size if self.file_size else 0.0
 
 
 def survey(source: Path) -> Survey | None:
@@ -314,6 +353,7 @@ def survey(source: Path) -> Survey | None:
         file_size=source.stat().st_size,
         image_bytes=walk.image_bytes,
         content_bytes=sum(_stored_size(stream) for stream in walk.content),
+        font_bytes=walk.font_bytes,
     )
 
 

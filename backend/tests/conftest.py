@@ -3,6 +3,7 @@ are committed, so the suite cannot drift from a stale file on disk."""
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import shutil
 import subprocess
@@ -35,11 +36,52 @@ requires_poppler = pytest.mark.skipif(
     reason="poppler-utils is only installed in the backend image",
 )
 
+requires_pdf2docx = pytest.mark.skipif(
+    shutil.which("pdf2docx") is None,
+    reason="pdf2docx is only installed in the backend image",
+)
+
+
+def _has_anydoc() -> bool:
+    return importlib.util.find_spec("anydoc") is not None
+
+
+requires_anydoc = pytest.mark.skipif(
+    not _has_anydoc(), reason="anydoc is only installed in the backend image"
+)
+
 
 @pytest.fixture(scope="session")
 def client() -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
+
+
+def ink_on_first_page(pdf: bytes) -> int:
+    """How many dark pixels the first page actually draws.
+
+    The way a badly subset font fails is that the page comes out blank while the
+    file stays valid and its text still extracts, so counting marks on a real
+    rasterisation is the only assertion that catches it.
+    """
+    import tempfile
+
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "in.pdf"
+        source.write_bytes(pdf)
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", "72", "-f", "1", "-l", "1",
+             str(source), str(Path(folder) / "page")],
+            check=True,
+            capture_output=True,
+        )
+        rendered = sorted(Path(folder).glob("page-*.png"))
+        assert rendered, "pdftoppm produced nothing"
+        with Image.open(rendered[0]) as image:
+            grey = image.convert("L")
+            return sum(grey.histogram()[:128])
 
 
 # --- fixture documents -------------------------------------------------------
@@ -172,6 +214,86 @@ def build_vector_pdf(pages: int = 3, glyphs: int = 500) -> bytes:
     return assemble_pdf(objects, catalog)
 
 
+DEJAVU_REGULAR = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+requires_font = pytest.mark.skipif(
+    not DEJAVU_REGULAR.exists(),
+    reason="a scalable font is only installed in the backend image",
+)
+
+
+def build_fat_font_pdf(text: str = "Hello") -> bytes:
+    """A one-page PDF that embeds a whole 6,000-glyph font to draw five letters.
+
+    This is what Word does: the font program goes in complete, subsetted only in
+    name. DejaVu Sans stands in for Segoe UI Emoji — the real offender is 7.7 MB
+    because of its colour tables, but the shape of the problem is the same one,
+    and this fixture needs no binary asset of its own.
+    """
+    from fontTools.ttLib import TTFont
+
+    program = DEJAVU_REGULAR.read_bytes()
+    metrics = TTFont(io.BytesIO(program), lazy=True)
+    upem = metrics["head"].unitsPerEm
+    cmap = metrics.getBestCmap()
+    widths = []
+    for code in range(32, 127):
+        name = cmap.get(code)
+        advance = metrics["hmtx"][name][0] if name else 0
+        widths.append(round(advance * 1000 / upem))
+
+    objects: list[bytes] = []
+
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+
+    packed = zlib.compress(program, 6)
+    font_file = add(
+        b"<< /Filter /FlateDecode /Length "
+        + str(len(packed)).encode()
+        + b" /Length1 "
+        + str(len(program)).encode()
+        + b" >>\nstream\n"
+        + packed
+        + b"\nendstream"
+    )
+    descriptor = add(
+        b"<< /Type /FontDescriptor /FontName /DejaVuSans /Flags 32 "
+        b"/FontBBox [-1021 -463 1793 1232] /ItalicAngle 0 /Ascent 928 "
+        b"/Descent -236 /CapHeight 700 /StemV 80 /FontFile2 "
+        + str(font_file).encode()
+        + b" 0 R >>"
+    )
+    font = add(
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /DejaVuSans "
+        b"/FirstChar 32 /LastChar 126 /Widths ["
+        + b" ".join(str(width).encode() for width in widths)
+        + b"] /Encoding /WinAnsiEncoding /FontDescriptor "
+        + str(descriptor).encode()
+        + b" 0 R >>"
+    )
+    drawing = b"BT /F1 28 Tf 72 700 Td (" + text.encode("ascii") + b") Tj ET"
+    contents = add(
+        b"<< /Length " + str(len(drawing)).encode() + b" >>\nstream\n" + drawing + b"\nendstream"
+    )
+    page_id = len(objects) + 1
+    tree_id = page_id + 1
+    add(
+        b"<< /Type /Page /Parent "
+        + str(tree_id).encode()
+        + b" 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 "
+        + str(font).encode()
+        + b" 0 R >> >> /Contents "
+        + str(contents).encode()
+        + b" 0 R >>"
+    )
+    tree = add(b"<< /Type /Pages /Count 1 /Kids [" + str(page_id).encode() + b" 0 R] >>")
+    assert tree == tree_id, "the page must be laid out before the page tree"
+    catalog = add(b"<< /Type /Catalog /Pages " + str(tree).encode() + b" 0 R >>")
+    return assemble_pdf(objects, catalog)
+
+
 DEJAVU = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
 
@@ -275,6 +397,13 @@ def photo_pdf() -> bytes:
 @pytest.fixture(scope="session")
 def vector_pdf() -> bytes:
     return build_vector_pdf()
+
+
+@pytest.fixture(scope="session")
+def fat_font_pdf() -> bytes:
+    if not DEJAVU_REGULAR.exists():
+        pytest.skip("a scalable font is only installed in the backend image")
+    return build_fat_font_pdf()
 
 
 @pytest.fixture(scope="session")

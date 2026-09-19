@@ -1,7 +1,7 @@
 [project]
 name = "pdfkit-backend"
 version = "0.1.0"
-description = "FastAPI backend for PDFKit — compress, OCR, protect, unlock and image extraction."
+description = "FastAPI backend for PDFKit — compress, OCR, protect, unlock, image extraction and document conversion."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,6 +11,16 @@ dependencies = [
     "ocrmypdf>=16.6",
     "pillow>=11.0",
     "pypdf>=5.1",
+    # Font subsetting for Compress. Word embeds whole fonts — a document with one
+    # emoji in it carries all 7.7 MB of Segoe UI Emoji — and Ghostscript's own
+    # subsetter does not understand the colour tables that make up the bulk.
+    "fonttools>=4.55",
+    # PDF → Markdown. Converts locally; the hosted-OCR path is never used.
+    "firecrawl-anydoc>=0.2.4",
+    # PDF → Word. Invoked through its own `pdf2docx convert` CLI, never imported,
+    # so its AGPL PyMuPDF engine stays a separate process — the same posture the
+    # image already has with Ghostscript.
+    "pdf2docx>=0.5.13",
 ]
 
 [dependency-groups]
