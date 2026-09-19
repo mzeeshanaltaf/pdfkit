@@ -12,9 +12,17 @@ interface FileGridProps {
   onReorder: (activeId: string, overId: string) => void;
   /** Rendered into each card's hover overlay, e.g. per-file rotate buttons. */
   renderActions?: (file: ToolFile) => ReactNode;
+  /** On Unlock, a password-protected file is the expected input, not a broken one. */
+  allowEncrypted?: boolean;
 }
 
-export function FileGrid({ files, onRemove, onReorder, renderActions }: FileGridProps) {
+export function FileGrid({
+  files,
+  onRemove,
+  onReorder,
+  renderActions,
+  allowEncrypted = false,
+}: FileGridProps) {
   return (
     <SortableGrid
       ids={files.map((file) => file.id)}
@@ -29,6 +37,7 @@ export function FileGrid({ files, onRemove, onReorder, renderActions }: FileGrid
           index={index}
           onRemove={onRemove}
           actions={renderActions?.(file)}
+          allowEncrypted={allowEncrypted}
         />
       ))}
     </SortableGrid>

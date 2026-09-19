@@ -18,11 +18,22 @@ interface FileCardProps {
   onRemove: (id: string) => void;
   /** Per-tool controls shown over the card on hover, e.g. the Rotate tool's turn buttons. */
   actions?: ReactNode;
+  /** On Unlock, an encrypted file is what the tool is for — not a failure to flag in red. */
+  allowEncrypted?: boolean;
 }
 
-export function FileCard({ file, index, onRemove, actions }: FileCardProps) {
+export function FileCard({
+  file,
+  index,
+  onRemove,
+  actions,
+  allowEncrypted = false,
+}: FileCardProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
     useSortable({ id: file.id });
+
+  const locked = allowEncrypted && file.error?.kind === "encrypted";
+  const failed = Boolean(file.error) && !locked;
 
   const meta = [formatBytes(file.size), formatPageCount(file.pageCount)]
     .filter(Boolean)
@@ -34,7 +45,8 @@ export function FileCard({ file, index, onRemove, actions }: FileCardProps) {
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
         "group relative flex flex-col rounded-xl border border-border bg-card p-3 shadow-xs transition-shadow",
-        file.error && "border-destructive/50",
+        failed && "border-destructive/50",
+        locked && "border-amber-500/50",
         isDragging && "z-10 opacity-80 shadow-lg",
       )}
     >
@@ -42,15 +54,21 @@ export function FileCard({ file, index, onRemove, actions }: FileCardProps) {
         src={file.thumbnail}
         alt={`First page of ${file.name}`}
         rotation={file.rotation}
-        failed={Boolean(file.error)}
+        failed={failed}
+        locked={locked}
       />
 
       <div className="mt-3 min-w-0">
         <p className="truncate text-sm font-medium" title={file.name}>
           {file.name}
         </p>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {file.error ? file.error.message : meta}
+        <p
+          className={cn(
+            "mt-0.5 truncate text-xs",
+            locked ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground",
+          )}
+        >
+          {locked ? `${formatBytes(file.size)} · locked` : file.error ? file.error.message : meta}
         </p>
       </div>
 

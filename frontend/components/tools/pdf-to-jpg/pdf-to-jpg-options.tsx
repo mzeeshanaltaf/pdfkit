@@ -29,6 +29,7 @@ export function PdfToJpgOptions({ state, onChange }: PdfToJpgOptionsProps) {
   const readable = files.filter((file) => !file.error);
   const counted = readable.every((file) => file.pageCount !== null);
   const pages = readable.reduce((sum, file) => sum + (file.pageCount ?? 0), 0);
+  const extracting = state.mode === "extract";
 
   const set = (patch: Partial<JpgState>) => onChange({ ...state, ...patch });
 
@@ -51,11 +52,11 @@ export function PdfToJpgOptions({ state, onChange }: PdfToJpgOptionsProps) {
           <ModeCard
             icon={Images}
             title="Extract images"
-            description="Pull out the photos already embedded in the document."
-            selected={false}
-            // Extracting embedded images means reading the document's image streams, which
-            // is a backend job; the mode is shown now so the choice is not a surprise later.
-            comingSoon
+            // Reading a document's image streams is a job for poppler, so unlike the page
+            // mode this one leaves the browser.
+            description="Pull out the photos already embedded in the document. Runs on the server."
+            selected={extracting}
+            onSelect={() => set({ mode: "extract" })}
           />
         </div>
       </section>
@@ -78,22 +79,36 @@ export function PdfToJpgOptions({ state, onChange }: PdfToJpgOptionsProps) {
               <span>
                 {JPG_QUALITIES[quality].label}
                 <span className="block text-xs text-muted-foreground">
-                  ≈{JPG_QUALITIES[quality].dpi} dpi
+                  {/* Rendering picks a resolution; extraction only picks how hard to
+                      compress bitmaps whose size the document already fixed. */}
+                  {extracting
+                    ? quality === "high"
+                      ? "less JPEG loss"
+                      : "smaller files"
+                    : `≈${JPG_QUALITIES[quality].dpi} dpi`}
                 </span>
               </span>
             </Label>
           ))}
         </RadioGroup>
         <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-          Normal is sized for the screen. High is worth it for printing or for reading small
-          type, and makes files roughly twice as large.
+          {extracting
+            ? "Images come out at whatever size they are stored in the PDF. This only sets how hard they are re-compressed as JPEG."
+            : "Normal is sized for the screen. High is worth it for printing or for reading small type, and makes files roughly twice as large."}
         </p>
       </section>
 
-      {pages > 1 && (
+      {extracting ? (
         <p className="border-t border-border pt-5 text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">{pages} JPGs</span>, delivered as a ZIP.
+          Every embedded image is returned as a ZIP. A document built from text and vector
+          artwork has none to find.
         </p>
+      ) : (
+        pages > 1 && (
+          <p className="border-t border-border pt-5 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">{pages} JPGs</span>, delivered as a ZIP.
+          </p>
+        )
       )}
     </div>
   );
@@ -104,41 +119,24 @@ interface ModeCardProps {
   title: string;
   description: string;
   selected: boolean;
-  onSelect?: () => void;
-  comingSoon?: boolean;
+  onSelect: () => void;
 }
 
 /** A mode as a pressable card, so the whole box — icon, title and blurb — is the hit target. */
-function ModeCard({
-  icon: Icon,
-  title,
-  description,
-  selected,
-  onSelect,
-  comingSoon = false,
-}: ModeCardProps) {
+function ModeCard({ icon: Icon, title, description, selected, onSelect }: ModeCardProps) {
   return (
     <button
       type="button"
-      disabled={comingSoon}
-      aria-pressed={comingSoon ? undefined : selected}
+      aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        "flex w-full items-start gap-3 rounded-lg border border-border p-3 text-left transition-colors",
+        "flex w-full cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-left transition-colors hover:border-brand/50",
         selected && "border-brand bg-brand/8",
-        comingSoon ? "opacity-60" : "cursor-pointer hover:border-brand/50",
       )}
     >
       <Icon className="mt-0.5 size-5 shrink-0 text-brand" aria-hidden />
       <span className="min-w-0">
-        <span className="flex items-center gap-2 text-sm font-medium">
-          {title}
-          {comingSoon && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              Coming soon
-            </span>
-          )}
-        </span>
+        <span className="block text-sm font-medium">{title}</span>
         <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
           {description}
         </span>

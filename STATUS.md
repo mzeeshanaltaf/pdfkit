@@ -1,16 +1,15 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 4)
+Last updated: 2026-09-19 (Phase 5)
 
 ## Current phase
 
-**Phase 4 — Backend services** — ✅ complete. All five backend endpoints are implemented,
-tested (53 passing in Docker) and verified by curl against the running container.
-**Every one of the 10 tools now has real processing behind it**; what is missing is the
-wiring from the four remaining placeholder workspaces to these endpoints.
+**Phase 5 — Wire backend tools into the UI** — ✅ complete. Compress, Protect, Unlock, OCR
+and PDF→JPG's "Extract images" mode are all wired to the Phase 4 endpoints and verified end
+to end against the Dockerised backend. **All 10 tools are now functional — this is
+feature-complete.** The placeholder workspace is gone.
 
-Next up: **Phase 5 — Wire backend tools into the UI**. See
-[`docs/phases/phase-5-*.md`](docs/phases/) for the task list.
+Next up: **Phase 6 — Polish**. See [`docs/phases/phase-6-*.md`](docs/phases/).
 
 ## Tools live so far
 
@@ -21,8 +20,11 @@ Next up: **Phase 5 — Wire backend tools into the UI**. See
 | Split PDF | `/split-pdf` | ✅ real, browser-side |
 | Organize PDF | `/organize-pdf` | ✅ real, browser-side |
 | Page numbers | `/add-page-numbers` | ✅ real, browser-side |
-| PDF to JPG | `/pdf-to-jpg` | ✅ page mode real; "Extract images" mode visible but disabled until Phase 5 |
-| Compress, OCR, Protect, Unlock | — | backend endpoint real (Phase 4); **UI still the placeholder workspace** until Phase 5 |
+| PDF to JPG | `/pdf-to-jpg` | ✅ both modes — pages in the browser, extract-images on the backend |
+| Compress PDF | `/compress-pdf` | ✅ real, `POST /compress` |
+| Protect PDF | `/protect-pdf` | ✅ real, `POST /protect` |
+| Unlock PDF | `/unlock-pdf` | ✅ real, `POST /unlock`, one request per file |
+| OCR PDF | `/ocr-pdf` | ✅ real, `POST /ocr` + `GET /ocr/languages` |
 
 ## Phase checklist
 
@@ -31,7 +33,7 @@ Next up: **Phase 5 — Wire backend tools into the UI**. See
 - [x] Phase 2 — Browser tools batch 1 (Merge, Rotate, Split)
 - [x] Phase 3 — Browser tools batch 2 (PDF→JPG page mode, Organize, Page Numbers)
 - [x] Phase 4 — Backend services (Compress, Protect, Unlock, OCR, Extract images) + tests
-- [ ] Phase 5 — Wire backend tools into UI
+- [x] Phase 5 — Wire backend tools into UI — **feature-complete**
 - [ ] Phase 6 — Polish (responsive, metadata, edge cases, a11y)
 - [ ] Phase 7 — Deploy to Coolify
 
@@ -477,72 +479,236 @@ the backend image; the script prints the command.
 - `starlette` warns that `httpx` with `TestClient` is deprecated in favour of `httpx2`.
   Still harmless at 53 tests; it is the only warning the suite emits.
 - Traefik default request body limit vs. the 50 MB upload cap — still flagged for Phase 7.
-- **`sample-scanned.pdf` cannot demonstrate OCR.** `make-test-fixtures.mjs` draws "five thick
-  vertical strokes… a word-shaped smudge", not glyphs, so Tesseract correctly finds nothing
-  and the OCR output has an empty text layer. It is still a perfectly good *image-only*
-  fixture (which is all phases 2–3 needed), but Phase 5 cannot use it to eyeball the OCR tool
-  in the browser. Fix when Phase 5 needs it: have the generator draw real lettering — the
-  backend suite's `build_scanned_pdf()` in `backend/tests/conftest.py` shows the shape of it
-  (Pillow + DejaVu at 150 dpi, which OCRs cleanly). Left alone here because swapping a
-  fixture that phases 2–3 assert against is a decision for the phase that needs the change.
-- **`/images/extract` always returns a zip, even for one image**, as the phase doc specifies —
-  but the browser-side PDF→JPG page mode returns a bare JPEG for a single page. Phase 5 wires
-  both into the *same* tool, so decide then whether the two modes should agree; the fix is one
-  line in `app/services/images.py` (return the entries instead of pre-zipping) if they should.
 - The `X-Original-Size` / `X-Result-Size` headers are only readable cross-origin because they
   are in `expose_headers` in `main.py`. If a reverse proxy strips them in Phase 7, the
-  compress UI silently loses its before/after numbers.
+  compress UI silently loses its before/after numbers — it degrades to no size line rather
+  than to a wrong one, but it is worth checking after the deploy.
+- **Resolved in Phase 5 — `sample-scanned.pdf` cannot demonstrate OCR.**
+  `make-test-fixtures.mjs` draws stroke-shaped smudges rather than glyphs, so Tesseract
+  correctly finds nothing in it. Phase 5 did not change the committed fixture (phases 2-3
+  assert against it); it generated a throwaway 600 dpi image-only PDF with real rendered
+  lettering in the scratchpad instead, which is also what made the compression levels
+  distinguishable. If a committed OCR fixture is ever wanted, `build_scanned_pdf()` in
+  `backend/tests/conftest.py` is the shape to copy.
+- **Resolved in Phase 5 — `/images/extract` always returns a zip, even for one image**,
+  while the browser-side page mode returns a bare JPEG for a single page. Deliberately left
+  inconsistent: the page mode's output count is known before the run (one per page, and the
+  panel says so), whereas extraction's is not known until poppler has looked. A tool that
+  unpredictably hands back either a `.jpg` or a `.zip` is worse than one that always hands
+  back a `.zip`, so extraction always zips and the panel says that too.
 
 ## Notes for the next session
 
-- **Phase 5 is frontend work**: wire Compress, Protect, Unlock, OCR and PDF→JPG's
-  "Extract images" mode to the endpoints Phase 4 built. **Read `backend/README.md` first** —
-  it has the field names, the response shapes and the full error-`detail` table, which is
-  what the client needs to branch on (`password_required` → show the password field,
-  `wrong_password` → mark it wrong, `no_images_found`, `server_busy`, `processing_timed_out`).
-- **Run the backend while working on Phase 5**: `docker compose up backend`, and set
-  `NEXT_PUBLIC_API_URL=http://localhost:8000` for `npm run dev`. CORS already allows
-  `localhost:3000` and `127.0.0.1:3000`.
+- **Phase 6 is polish**: responsive sweep, metadata, edge cases and a11y across all 10 tools.
+  Everything is functional as of Phase 5, so this is refinement, not wiring.
+- **Run both halves while working**: `docker compose up backend` plus `npm run dev`, with
+  `NEXT_PUBLIC_API_URL=http://localhost:8000` (already in `frontend/.env.local`). CORS
+  allows `localhost:3000` and `127.0.0.1:3000`.
 - **Backend commands**, for reference:
   - `docker compose up backend` — the runtime image, port 8000.
   - `docker compose --profile test run --rm backend-tests` — the suite (53 tests).
   - `docker compose --profile test build backend-tests` after changing `app/` or `tests/`.
   - Note the phase doc's `docker compose run --rm backend pytest` does **not** work: the
     runtime image deliberately carries neither pytest nor the tests.
+  - `docker cp` cannot read `/tmp/pdfkit` — it is a tmpfs mount. To get a file out of the
+    container, `docker compose exec -T backend base64 -w0 //tmp/pdfkit/<file>` and decode it
+    on this side (the leading `//` stops Git Bash rewriting the path).
 - **When adding a backend endpoint**: service in `app/services/`, thin router in
   `app/routers/`, register it in `app/routers/__init__.py`'s `ROUTERS`. Never call
   `asyncio.create_subprocess_exec` directly — go through `app/services/runner.py`, which owns
   the concurrency limit, the timeout and stderr sanitising.
-- **The frontend pattern, now proven three times over** (`merge|rotate|split` and
-  `pdf-to-jpg|organize|page-numbers`): a `<tool>-workspace.tsx` holding whatever state
-  `process` needs and rendering `<ToolShell>`, a `<tool>-options.tsx` rendered inside the
-  shell that reads the file list with `useToolShell()`, and pure logic in `lib/pdf/<tool>.ts`
-  that the panel and the process callback share. Register the workspace in
-  `components/tool/tool-page.tsx`'s `WORKSPACES` map and it takes over from the placeholder.
+- **The browser-tool pattern** (`merge|rotate|split`, `pdf-to-jpg|organize|page-numbers`): a
+  `<tool>-workspace.tsx` holding whatever state `process` needs and rendering `<ToolShell>`,
+  a `<tool>-options.tsx` rendered inside the shell that reads the file list with
+  `useToolShell()`, and pure logic in `lib/pdf/<tool>.ts` that the panel and the process
+  callback share.
+- **The backend-tool pattern** (`compress|protect|ocr`, and PDF→JPG's extract mode): the same
+  shape, but `process` is one call to `runBackendTool(context, endpoint, fields, …)` from
+  `components/tool/backend-run.ts`, which owns the upload-progress-then-indeterminate
+  sequence. Unlock is the one exception — it loops per file through `uploadWithPassword` so
+  each file can have its own password.
+- **Every tool now has a workspace**, and `WORKSPACES` in `components/tool/tool-page.tsx` is
+  a total `Record<ToolId, ComponentType>` — adding a tool to `lib/tools.ts` without a
+  workspace is now a type error rather than a silent fallback to a placeholder.
 - **Anything a tool's `process` must see has to live outside `ToolShell`**, because the shell
   only passes `process` the file list. Keep it as a plain value plus pure functions and
   derive against `files` in the panel, the canvas, the CTA predicate and the run — Split's
   `planFromState` and Organize's `syncOrganize` are the two worked examples.
-- **`components/tool/tool-workspace.tsx` is now purely the backend-tool placeholder**: four
-  file-grid tools, upload progress then indeterminate. It should disappear entirely in
-  Phase 5.
+- **Error surfacing has two channels now.** Throw an `ApiError` with `recoverable: true` and
+  `ToolShell` shows a toast and returns to the file list with everything intact; throw
+  anything else and it shows the full-page failure screen. `silent: true` skips the toast
+  (used when the user cancels a password prompt). Everything from `lib/api.ts` is already
+  classified — see `recoverableStatus`.
+- **`eslint` forbids `setState` inside an effect** (`react-hooks/set-state-in-effect`), and
+  it is an error, not a warning. Derive with `useMemo` instead — OCR's language filtering is
+  the worked example.
 - `components/tool/page-thumbnail.tsx` is the non-draggable page preview (Split preview, Page
   numbers preview); `PageGrid` / `PageCard` is the editable one (Organize only).
-- **Phase 5 has one job waiting in the UI**: `pdf-to-jpg-options.tsx` renders an
-  "Extract images" mode card that is present but disabled with a "Coming soon" badge. Wiring
-  it means sending the file to the backend instead of calling `pdfToJpg`, and dropping the
-  `comingSoon` flag. `lib/tools.ts` already marks the tool `runsIn: "hybrid"`, so its files
-  are already held to the 50 MB cap.
 - **Bash heredocs really do mangle backslashes** in this environment, as the `lib/format.ts`
   note says: a `/\\/g` written into a heredoc arrives as `/\/g`. Write `.ts`/`.mjs` files with
   the editor tools, not `cat > file <<EOF` — including when editing this file, which is how
   this very line was mangled once already.
-- **How the browser tools were verified**, if an output ever needs re-checking: hook
+- **How the tools were verified**, if an output ever needs re-checking: hook
   `URL.createObjectURL` in the page, run the tool, click Download, then read the captured
   blob back as base64 and inspect it in Node with pdf-lib/pdf.js from
   `frontend/node_modules`. That is the only way to assert on the bytes rather than the
-  screen, and it caught nothing this phase precisely because it was used throughout.
+  screen. A hook on `XMLHttpRequest.open` / `fetch` is the matching trick for proving that a
+  rejected file never left the browser.
 - Local machine lacks Ghostscript/qpdf — backend must always be exercised via Docker,
   never `uv run` directly on host (`uv run pytest` is fine; it doesn't touch the binaries).
 - Remember the hydration rule: every tool workspace must stay behind
   `next/dynamic` + `{ ssr: false }` (`components/tool/tool-page.tsx` is that boundary).
+
+## What Phase 5 built
+
+All under `frontend/`.
+
+**Backend client**
+- `lib/api.ts` — the browser's half of the FastAPI service. `uploadAndProcess(endpoint,
+  files, fields, { onProgress, signal, fallbackName })` over `XMLHttpRequest`, returning
+  `{ blob, filename, headers }`; `ApiError` (status, backend `code`, `recoverable`,
+  `silent`); `assertUploadable` for the 50 MB pre-check; `filenameFromDisposition`;
+  `uploadWithPassword` for the ask-and-retry protocol; `getJson` for `/ocr/languages`.
+- `lib/file-handoff.ts` — the module-level slot that carries a `File` from one tool to
+  another across a client-side navigation.
+- `components/tool/backend-run.ts` — `runBackendTool`, the shared "upload % then
+  indeterminate" progress pattern, plus `numericHeader`.
+- `components/tool/password-dialog.tsx` — `usePasswordPrompt()` returning
+  `{ requestPassword, dismissPrompt, passwordDialog }`. `lib/api.ts` owns the retry
+  protocol; this owns the UI.
+
+**Tool workspaces** (`frontend/components/tools/<tool>/`)
+- `compress/` — three radio cards (Extreme / Recommended / Less) plus a size summary.
+- `protect/` — password + repeat with a shared show/hide toggle, inline mismatch error, and
+  `protectReady()` as the single CTA gate.
+- `unlock/` — the "just press the button" callout and a per-file lock/unlock list.
+- `ocr/` — `use-ocr-languages.ts` (fetches `GET /ocr/languages`, falls back to English with
+  a toast) and the max-3 language picker with the accuracy callout.
+- `pdf-to-jpg/` — "Extract images" is live; the quality labels and footer text now change
+  with the mode, since dpi means nothing when extracting stored bitmaps.
+
+**Shell changes**
+- `ToolShell` gained `acceptEncrypted`, `adoptFiles` and `overlay`, and now turns a
+  recoverable `ApiError` into a toast plus a step back to the file list rather than the
+  full-page failure screen.
+- `EncryptedNotice` takes `ToolFile[]` and hands the files to Unlock on click.
+- `FileGrid` / `FileCard` / `Thumbnail` gained `allowEncrypted` / `locked`, so on Unlock a
+  protected file reads as amber "locked" rather than a red failure.
+- `tool-page.tsx`'s `WORKSPACES` is now a total `Record<ToolId, ComponentType>`, and
+  `components/tool/tool-workspace.tsx` (the placeholder) was **deleted** — every tool has a
+  real workspace.
+
+## Decisions made in Phase 5
+
+- **A recoverable failure is a toast, not the error screen.** A wrong password, a busy or
+  unreachable server, or a PDF with no images to extract all leave the workspace exactly as
+  it was; replacing the screen with a failure page throws that away for nothing. `ApiError`
+  carries `recoverable` (everything except a 5xx that is not 503/504) and `silent` (the user
+  cancelled), and `ToolShell` branches on them. The full-page error screen is now reserved
+  for genuine server faults.
+- **Unlock sends one request per file; every other backend tool sends the batch.** The
+  backend takes a single `password` per request, so a batch of differently-locked files
+  would fail whole at the first one. Per file, each gets its own prompt, its own retry and
+  its own inline error; the outputs are zipped client-side with the existing `zipBlobs`.
+- **The first unlock attempt deliberately carries no password.** A file locked with only an
+  owner password opens with the empty one, so prompting up front would ask for something the
+  user does not have. `password_required` means that attempt failed; `wrong_password` means
+  the typed one did — the dialog is told which, which is what lets it show an inline error
+  instead of a generic toast.
+- **The password dialog stays mounted between attempts**, and its resolver lives in a ref
+  rather than in state, because it has to be callable from an event handler without going
+  through a React updater. The form is keyed on the *filename*: a rejected password is left
+  in the field (usually a typo away from right) but pre-selected, while moving to the next
+  file starts empty.
+- **`ToolShell.acceptEncrypted` exists because `readableFiles` excluded the very files
+  Unlock is for.** It also had to drop encrypted files out of the `stillLoading` check —
+  they never get a page count, so the CTA would have stayed disabled for good.
+- **The encrypted-PDF banner hands the actual `File` over**, through a module-level slot
+  that survives a `next/link` navigation and is emptied on read. A full page load loses it,
+  which is correct: the `File` objects are gone by then anyway.
+- **Compress's saving is a batch total, not per file.** `ToolResult` carries one blob and
+  one size pair, and `X-Original-Size` / `X-Result-Size` are sums over the request — so for
+  the single-file case (the common one) it is per-file, and for a batch it is the honest
+  total. Per-file numbers would mean one request per file and a different result screen.
+- **The progress bar goes indeterminate the moment the upload finishes**, rather than
+  sitting at 100%. Once the last byte is on the wire there is no honest percentage for
+  Ghostscript's or Tesseract's share of the wait.
+- **The OCR language list comes from the server, and an empty selection disables the CTA.**
+  Which models exist is a property of the backend image, so hardcoding them here would go
+  stale on the next Dockerfile change. An earlier version back-filled the first installed
+  language when the selection emptied, which made unchecking the only language look like a
+  broken checkbox; it now simply disables the CTA and the panel says why.
+- **PDF→JPG's quality labels change with the mode.** "≈144 dpi" is meaningful when a page is
+  being rendered and meaningless when a stored bitmap is being re-compressed, so extraction
+  shows "smaller files" / "less JPEG loss" instead.
+
+## Phase 5 verification results
+
+`npm run lint`, `npx tsc --noEmit` and `npm run build` are clean (12 static routes). The
+tools were driven through a real headless Chrome (`browse … --local`) against `npm run dev`
+with `docker compose up backend`, and every output blob was captured (by hooking
+`URL.createObjectURL`) and read back in Node — so these are assertions about the bytes the
+browser actually downloaded, not about the screen.
+
+Fixture: a generated 2-page, 600 dpi, image-only PDF (928 KB) with legible rendered text and
+a photo-like block. `sample-text.pdf` is far too lean for Ghostscript to improve on and too
+small to tell the compression levels apart. Not committed — it lives in the scratchpad, and
+the committed fixtures are still the ones phases 2-4 use.
+
+- **Compress, all three levels** on the same file: 928 KB → 41.9 KB (95%), → 108 KB (88%),
+  → 445 KB (52%) — a strict extreme < recommended < less ordering. Each downloaded blob is
+  byte-for-byte the size curl gets from the endpoint, and all three open with pdf-lib at
+  2 pages / 408×528. The readout comes from `X-Original-Size` / `X-Result-Size`.
+- **Compress, two files** → a ZIP of `rich-scan-compressed.pdf` and
+  `report-two-compressed.pdf`, with the result screen showing the batch total.
+- **Protect**: the CTA is disabled while the fields are empty, still disabled with an inline
+  "The two passwords do not match." on mismatch, and enabled once they match. The file the
+  *browser* downloaded reports `R = 6` and `stream/string/file encryption method: AESv3`
+  under `qpdf --show-encryption`, is refused by `qpdf --check` with "invalid password", and
+  passes `qpdf --password=hunter2 --check`.
+- **Unlock, round trip** on that same protected file: the card reads amber "4.5 KB · locked"
+  and the CTA is enabled, with no encrypted-PDF banner. A wrong password leaves the dialog
+  open with "That password did not open the file. Try again.", `aria-invalid="true"`, no
+  toast and no error screen; `hunter2` then succeeds.
+- **Unlock, two files with different passwords** (`hunter2` and `secondpass`): prompted one
+  at a time, each field starting empty with no stale retry error; result "Download 2 unlocked
+  PDFs" → a ZIP of two 5-page PDFs with no `/Encrypt` and page 1 text intact.
+- **Unlock, cancelled prompt** → straight back to the file list, no toast, no error screen.
+- **Encrypted-guard handoff**: a locked file on Merge shows the banner with the CTA disabled;
+  clicking "Unlock this file" lands on `/unlock-pdf` with that file already loaded and the
+  CTA ready. A full page reload correctly shows an empty dropzone instead.
+- **OCR**: the picker is populated from `GET /ocr/languages` (`English / eng`) with English
+  checked; unchecking it disables the CTA and shows "Pick at least one language". The
+  image-only fixture goes from **0 characters** of extractable text to **463**, reading
+  "THE QUARTERLY REPORT Revenue grew by eleven percent across the northern region…".
+- **Progress is real, not a timer**: sampling the processing view every 40 ms during the OCR
+  run captured "Uploading your file" with a determinate bar, then "Reading the pages — this
+  is the slow part" with the indeterminate one. That flip is driven only by `onProgress(100)`.
+- **PDF→JPG, extract images**: the "Coming soon" badge is gone and the mode runs; the ZIP
+  holds `rich-scan-image-001.jpg` / `-002.jpg`, both valid JPEGs at the stored **3400×4400**
+  — i.e. the embedded originals, not a re-render of the page. A text-only PDF gives the toast
+  "There are no embedded images in this PDF to extract." with the workspace left intact.
+- **Backend unreachable** — both with the container stopped before the request and killed
+  mid-OCR — gives "Could not reach the server. Check it is running and try again." as a
+  toast, keeps the files, and leaves the CTA usable. No hang, no crash, no error screen.
+- **Client-side pre-checks**: a 52 MB `huge.pdf` → "huge.pdf is over the 50 MB limit.";
+  `notes.txt` → "notes.txt is not a PDF." Both stay on the dropzone, and a hook on
+  `XMLHttpRequest.open` / `fetch` confirms **zero requests left the browser**. The same
+  52 MB file is accepted on Merge (a browser tool, uncapped) and only then fails to parse.
+- **390 px viewport** on Compress, Protect, Unlock, OCR and PDF→JPG: no horizontal overflow
+  and the sidebar stacked under the canvas in every case. The password dialog sits at
+  16 px / 374 px in a 390 px viewport.
+- **Browser-tool regression** after the shell changes: Merge still produces the 7-page
+  document ("Page 1 of 5" … "Page 5 of 5" then the two scanned pages), and Split still
+  produces its 5-page output.
+
+## Open notes for Phase 6
+
+- `503 server_busy` and `504 processing_timed_out` are mapped and take the same
+  recoverable-toast path as the errors above, but were not triggered live — that needs
+  `MAX_CONCURRENT_JOBS` saturated or a deliberately slow job.
+- Only `eng` is installed in the backend image, so the OCR picker's max-3 cap and its
+  language ordering are not exercised by anything but reading the code.
+- Compress, Protect and OCR reject an encrypted input at the backend with
+  `422 password_required`, but the client-side encrypted guard means one never reaches them;
+  that error therefore has no dedicated UI beyond the generic toast.

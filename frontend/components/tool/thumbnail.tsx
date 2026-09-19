@@ -1,6 +1,6 @@
 "use client";
 
-import { FileWarning } from "lucide-react";
+import { FileWarning, Lock } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -10,6 +10,8 @@ interface ThumbnailProps {
   /** Degrees to spin the preview by. Applied with a transform, so it is free. */
   rotation?: number;
   failed?: boolean;
+  /** Encrypted, and that is fine — the tool is about to open it. */
+  locked?: boolean;
   className?: string;
 }
 
@@ -23,7 +25,14 @@ interface ThumbnailProps {
  */
 const FRAME_ASPECT = 0.75;
 
-export function Thumbnail({ src, alt, rotation = 0, failed = false, className }: ThumbnailProps) {
+export function Thumbnail({
+  src,
+  alt,
+  rotation = 0,
+  failed = false,
+  locked = false,
+  className,
+}: ThumbnailProps) {
   const quarterTurn = rotation % 180 !== 0;
   const transform = rotation
     ? `rotate(${rotation}deg)${quarterTurn ? ` scale(${FRAME_ASPECT})` : ""}`
@@ -36,7 +45,9 @@ export function Thumbnail({ src, alt, rotation = 0, failed = false, className }:
         className,
       )}
     >
-      {failed ? (
+      {locked ? (
+        <Lock className="size-6 text-amber-600 dark:text-amber-400" aria-hidden />
+      ) : failed ? (
         <FileWarning className="size-6 text-muted-foreground" aria-hidden />
       ) : src ? (
         // A data URL of a canvas render; next/image would add a network round trip for nothing.

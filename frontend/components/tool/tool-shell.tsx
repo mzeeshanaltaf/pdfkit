@@ -2,8 +2,10 @@
 
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api";
 import type { Tool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +40,19 @@ interface ToolShellProps {
   canSubmit?: boolean | ((files: ToolFile[]) => boolean);
   /** Per-card hover controls in the default file grid. */
   renderFileActions?: (file: ToolFile) => ReactNode;
+  /**
+   * Let password-protected files through to `process` instead of treating them as broken.
+   * Only Unlock wants this: for every other tool an encrypted file is a dead end, which is
+   * what the EncryptedNotice banner is for.
+   */
+  acceptEncrypted?: boolean;
+  /**
+   * Files to load as soon as the workspace mounts, e.g. the ones the encrypted-PDF banner
+   * handed over on the way to Unlock. Called once.
+   */
+  adoptFiles?: () => File[];
+  /** Rendered inside the shell whatever the phase — used for the Unlock password dialog. */
+  overlay?: ReactNode;
 }
 
 /**
@@ -53,6 +68,9 @@ export function ToolShell({
   canvas,
   canSubmit = true,
   renderFileActions,
+  acceptEncrypted = false,
+  adoptFiles,
+  overlay,
 }: ToolShellProps) {
   const filesApi = useToolFiles(tool);
   const { files, addFiles, removeFile, reorderFiles, sortFiles, clearFiles } = filesApi;
@@ -77,12 +95,31 @@ export function ToolShell({
   // Abandon an in-flight run if the user navigates away mid-job.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Files handed over from another tool. A ref keeps this to one adoption even under the
+  // double-invoked effects of StrictMode.
+  const adoptRef = useRef(adoptFiles);
+  const adoptedRef = useRef(false);
+  useEffect(() => {
+    if (adoptedRef.current) return;
+    adoptedRef.current = true;
+    const incoming = adoptRef.current?.() ?? [];
+    if (incoming.length > 0) addFiles(incoming);
+  }, [addFiles]);
+
   const encryptedFiles = useMemo(
     () => files.filter((file) => file.error?.kind === "encrypted"),
     [files],
   );
-  const readableFiles = useMemo(() => files.filter((file) => !file.error), [files]);
-  const stillLoading = readableFiles.some((file) => file.pageCount === null);
+  const readableFiles = useMemo(
+    () =>
+      files.filter(
+        (file) => !file.error || (acceptEncrypted && file.error.kind === "encrypted"),
+      ),
+    [files, acceptEncrypted],
+  );
+  // An encrypted file never gets a page count, so waiting on one would disable the CTA for
+  // good — the only tool that accepts them is the one that can open them.
+  const stillLoading = readableFiles.some((file) => !file.error && file.pageCount === null);
   const submittable = typeof canSubmit === "function" ? canSubmit(readableFiles) : canSubmit;
 
   const handleSubmit = useCallback(async () => {
@@ -106,6 +143,17 @@ export function ToolShell({
       setPhase("done");
     } catch (error) {
       if (controller.signal.aborted) return;
+
+      // A recoverable failure — a wrong password, a busy or unreachable server, a file the
+      // tool had nothing to do — leaves the workspace exactly as it was. Taking over the
+      // screen with a failure page would throw that away, so it is a toast and a step back
+      // to the files instead.
+      if (error instanceof ApiError && error.recoverable) {
+        if (!error.silent) toast.error(error.message);
+        setPhase("idle");
+        return;
+      }
+
       setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
       setPhase("error");
     } finally {
@@ -126,12 +174,24 @@ export function ToolShell({
     [filesApi, tool, status, open],
   );
 
+  // The overlay (Unlock's password dialog) has to outlive the phase switch: the prompt is
+  // raised *while* the run is in flight, so it cannot live inside the configure screen.
   if (status === "processing") {
-    return <ProcessingView progress={progress} stage={stage} />;
+    return (
+      <>
+        <ProcessingView progress={progress} stage={stage} />
+        {overlay}
+      </>
+    );
   }
 
   if (status === "done" && result) {
-    return <ResultView tool={tool} result={result} onStartOver={startOver} />;
+    return (
+      <>
+        <ResultView tool={tool} result={result} onStartOver={startOver} />
+        {overlay}
+      </>
+    );
   }
 
   if (status === "error") {
@@ -178,8 +238,8 @@ export function ToolShell({
             </div>
 
             <div className="mx-auto max-w-[1100px] space-y-5 pr-16">
-              {encryptedFiles.length > 0 && tool.id !== "unlock" && (
-                <EncryptedNotice filenames={encryptedFiles.map((file) => file.name)} />
+              {encryptedFiles.length > 0 && !acceptEncrypted && (
+                <EncryptedNotice files={encryptedFiles} />
               )}
 
               {canvas ?? (
@@ -188,6 +248,7 @@ export function ToolShell({
                   onRemove={removeFile}
                   onReorder={reorderFiles}
                   renderActions={renderFileActions}
+                  allowEncrypted={acceptEncrypted}
                 />
               )}
             </div>
@@ -204,6 +265,7 @@ export function ToolShell({
           </OptionsSidebar>
         </div>
       )}
+      {overlay}
     </ToolShellProvider>
   );
 }
