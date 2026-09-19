@@ -17,6 +17,13 @@ unused font) and a content-stream rewriter (pdfwrite makes a vector PDF *bigger*
 PDF→JPG is the mixed case: page rendering happens in the browser, while extracting the
 images already embedded in a document uses the backend.
 
+OCR ships 14 Tesseract models — Arabic, Chinese (Simplified), Dutch, English, French,
+German, Hindi, Italian, Japanese, Portuguese, Russian, Spanish, Swedish, Urdu — and up to
+three can be combined on one document. Adding a fifteenth is one `tesseract-ocr-<code>`
+line in `backend/Dockerfile` (plus a `LANGUAGE_NAMES` entry so it shows a real name
+instead of its code); the picker reads `GET /ocr/languages`, so no frontend change. Each
+model costs roughly 0.5-6 MB of image size.
+
 ## Repository layout
 
 ```
@@ -72,6 +79,7 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 | `NEXT_PUBLIC_API_URL` | frontend | `http://localhost:8000` | Baked in at **build** time — the Docker image must be rebuilt to change it |
 | `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins |
 | `MAX_UPLOAD_MB` | backend | `50` | Per-file cap; the frontend enforces the same number client-side |
+| `MAX_OCR_LANGUAGES` | backend | `3` | Most languages one OCR request may combine; the picker mirrors this number |
 | `MAX_CONCURRENT_JOBS` | backend | `2` | Concurrent heavy jobs — subprocesses (Ghostscript/qpdf/OCR) and compression's in-process stream rewrite share the limit |
 | `JOB_TIMEOUT_SECONDS` | backend | `180` | Wall-clock ceiling for one job; per-operation overrides exist, e.g. `OCR_TIMEOUT_SECONDS` (600), `WORD_TIMEOUT_SECONDS` (300), `MARKDOWN_TIMEOUT_SECONDS` (120) |
 | `WORK_DIR` | backend | `/tmp/pdfkit` | Scratch space, mounted as tmpfs in compose |

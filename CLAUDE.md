@@ -13,7 +13,7 @@ A self-hosted, iLovePDF-style web app offering 12 PDF tools. Workflow: pick file
 | Processing split | **Browser** (pdf-lib/pdf.js, no upload): Merge, Split, Rotate, Organize, Page Numbers, PDF→JPG (page mode). **Backend**: Compress, OCR, Protect, Unlock, PDF→JPG (extract-images mode), PDF→Word (pdf2docx), PDF→Markdown (anydoc) |
 | Deployment | Coolify on Hostinger VPS (`zeeshanai.cloud`), two Docker services via `docker-compose.yml` |
 | Accounts / storage | None. No user accounts, no persisted files — everything is per-request/ephemeral |
-| OCR languages | English only for now; UI reads the language list from `GET /ocr/languages` so more can be added later without a frontend change |
+| OCR languages | 14 installed (Arabic, Chinese Simplified, Dutch, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, Spanish, Swedish, Urdu); adding one is a `tesseract-ocr-<code>` line in `backend/Dockerfile` plus a `LANGUAGE_NAMES` entry, never a frontend change — the UI reads `GET /ocr/languages` |
 | Upload limit | 50 MB per file, enforced both client-side (fast-fail) and server-side |
 | App name | **PDFKit** — kept as a single constant so it's easy to rename |
 

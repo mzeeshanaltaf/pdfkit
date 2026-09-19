@@ -1,7 +1,7 @@
 # Status
 
 Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages + two new tools
-+ the PDF-to-Word whitespace fix)
++ the PDF-to-Word whitespace fix + 13 more OCR languages)
 
 ## Current phase
 
@@ -16,6 +16,44 @@ Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](doc
 Two items were added to that phase doc by the conversion work: the body-size check now
 also covers the two new endpoints, and there is a **new proxy read-timeout check**, because
 PDF to Word with OCR can legitimately hold one request open for several minutes.
+
+## OCR languages: 1 → 14 (2026-09-19)
+
+The backend image shipped only `eng`. It now installs 13 more: Arabic, Chinese
+(Simplified), Dutch, French, German, Hindi, Italian, Japanese, Portuguese, Russian,
+Spanish, Swedish and Urdu. Measured cost: the image went **1.24 GB → 1.27 GB** (+26 MB),
+tessdata **15 MB → 46 MB**. Each model is 0.5-6 MB, so more are cheap; `tesseract-ocr-all`
+(162 packages, ~668 MB) is not, and should stay off the table.
+
+Three changes, and only the first is needed to add a fourteenth:
+
+1. `backend/Dockerfile` — one `tesseract-ocr-<code>` line per model. Note the package name
+   and the Tesseract code differ for some: `tesseract-ocr-chi-sim` gives `chi_sim`.
+2. `LANGUAGE_NAMES` in `app/services/ocr.py` — `urd` was missing and would have rendered
+   as its own code. Everything else was already listed.
+3. `_parse_langs` now sorts by **display name, not code**. With one language that was
+   invisible; with fourteen, sorting by code puts German above English and Dutch after
+   Japanese. `test_parse_langs_skips_the_header_and_non_languages` asserts the new order.
+
+`OcrLanguagePicker` (shared by OCR, PDF to Word and PDF to Markdown) grew a search box and
+pins the selected languages above the list, both switched on only above 8 installed models
+so a single-language deployment still renders exactly as it did. Pinning matters because a
+filter would otherwise hide a checked language and read as a deselection.
+
+Verified: suite **107 passed**; `GET /ocr/languages` returns all 14, name-sorted, `osd`
+excluded, Urdu named; and `POST /ocr` against `sample-scanned.pdf` returns 200 with a real
+PDF for `urd`, `chi_sim` and `spa,eng` — so the models load, they are not merely listed.
+
+Driven in a real browser on `/ocr-pdf` (the built frontend, not dev): all 14 rows render
+with English pinned and the other 13 name-sorted; typing `urd` narrows the list to Urdu
+while the checked English stays pinned and visible; `klingon` shows the empty state;
+picking Urdu and Spanish gives "3 of 3", pins the three in selection order under "Your
+picks, strongest first." and disables the other 11; and the CTA ran a real `eng,urd,spa`
+job through to the download panel.
+
+One gotcha for the next session: serve the frontend on **port 3000**. `CORS_ORIGINS`
+defaults to `localhost:3000` only, so on any other port `/ocr/languages` fails CORS and the
+picker silently falls back to English — which looks exactly like the models being missing.
 
 ## PDF to Word and PDF to Markdown (2026-09-19)
 
@@ -994,8 +1032,10 @@ the committed fixtures are still the ones phases 2-4 use.
 - ~~`503 server_busy` and `504 processing_timed_out` are mapped and take the same
   recoverable-toast path as the errors above, but were not triggered live.~~ Phase 6 drove
   both (plus a 500 and a refused connection) by intercepting the request in the browser.
-- Only `eng` is installed in the backend image, so the OCR picker's max-3 cap and its
-  language ordering are not exercised by anything but reading the code.
+- ~~Only `eng` is installed in the backend image, so the OCR picker's max-3 cap and its
+  language ordering are not exercised by anything but reading the code.~~ 14 languages are
+  installed now and the picker was driven in a real browser (see the top of this file), so
+  the cap and the ordering are exercised for the first time.
 - Compress, Protect and OCR reject an encrypted input at the backend with
   `422 password_required`, but the client-side encrypted guard means one never reaches them;
   that error therefore has no dedicated UI beyond the generic toast.

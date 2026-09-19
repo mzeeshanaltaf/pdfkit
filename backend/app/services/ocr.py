@@ -73,6 +73,7 @@ LANGUAGE_NAMES: dict[str, str] = {
     "tha": "Thai",
     "tur": "Turkish",
     "ukr": "Ukrainian",
+    "urd": "Urdu",
     "vie": "Vietnamese",
 }
 
@@ -90,12 +91,16 @@ _cache_lock = asyncio.Lock()
 
 
 def _parse_langs(output: str) -> list[Language]:
-    codes = sorted(
+    codes = {
         line.strip()
         for line in output.splitlines()
         if _LANG_CODE.match(line.strip()) and line.strip() not in _NOT_LANGUAGES
-    )
-    return [Language(code=code, name=LANGUAGE_NAMES.get(code, code)) for code in codes]
+    }
+    languages = [Language(code=code, name=LANGUAGE_NAMES.get(code, code)) for code in codes]
+    # Ordered by display name, not by code, because the picker renders this list as it
+    # arrives: sorting by code puts "German" above "English". The code breaks ties so the
+    # order stays stable for any model that falls back to showing its own code as a name.
+    return sorted(languages, key=lambda language: (language.name.casefold(), language.code))
 
 
 async def available_languages(refresh: bool = False) -> list[Language]:

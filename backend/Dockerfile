@@ -4,11 +4,27 @@
 FROM python:3.12-slim-bookworm AS base
 
 # Native tooling the PDF services shell out to.
+# The tesseract-ocr-* packages are the OCR models. Each is ~1-6 MB and shows up in
+# GET /ocr/languages on its own, so adding one here is the whole change - no code edit.
+# Note the package name and the Tesseract code differ for some: chi-sim vs chi_sim.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ghostscript \
       qpdf \
       tesseract-ocr \
       tesseract-ocr-eng \
+      tesseract-ocr-ara \
+      tesseract-ocr-chi-sim \
+      tesseract-ocr-deu \
+      tesseract-ocr-fra \
+      tesseract-ocr-hin \
+      tesseract-ocr-ita \
+      tesseract-ocr-jpn \
+      tesseract-ocr-nld \
+      tesseract-ocr-por \
+      tesseract-ocr-rus \
+      tesseract-ocr-spa \
+      tesseract-ocr-swe \
+      tesseract-ocr-urd \
       poppler-utils \
       fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*

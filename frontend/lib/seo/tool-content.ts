@@ -435,7 +435,7 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
       },
       {
         q: "Which languages can I use?",
-        a: "English is installed today. The language list is read from the server, so more can be added without a change to this page.",
+        a: "Fourteen are installed today: Arabic, Chinese (Simplified), Dutch, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, Spanish, Swedish and Urdu. You can combine up to three on one document. The list is read from the server, so more can be added without a change to this page.",
       },
       {
         q: "My PDF already has selectable text. Do I need OCR?",

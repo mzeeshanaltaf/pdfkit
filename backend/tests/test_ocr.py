@@ -33,8 +33,9 @@ def test_parse_langs_skips_the_header_and_non_languages() -> None:
         'List of available languages in "/usr/share/tessdata/" (4):\n'
         "eng\nosd\nequ\ndeu\n"
     )
-    assert [language.code for language in _parse_langs(raw)] == ["deu", "eng"]
-    assert [language.name for language in _parse_langs(raw)] == ["German", "English"]
+    # Ordered by display name, so English precedes German despite "deu" < "eng".
+    assert [language.code for language in _parse_langs(raw)] == ["eng", "deu"]
+    assert [language.name for language in _parse_langs(raw)] == ["English", "German"]
 
 
 @pytest.mark.skipif(
