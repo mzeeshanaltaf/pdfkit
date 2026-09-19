@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim-bookworm
+
+# --- base: system tooling and the production dependency set ------------------
+FROM python:3.12-slim-bookworm AS base
 
 # Native tooling the PDF services shell out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tesseract-ocr \
       tesseract-ocr-eng \
       poppler-utils \
+      fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.3 /uv /usr/local/bin/uv
@@ -25,11 +28,30 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
+# --- test: dev dependencies and the suite, never shipped ---------------------
+# Built with `--target test`; see the `backend-tests` service in docker-compose.
+FROM base AS test
+
+RUN uv sync --locked --no-install-project
+COPY app ./app
+COPY tests ./tests
+COPY README.md ./
+RUN uv sync --locked
+
+RUN mkdir -p /tmp/pdfkit
+CMD ["pytest", "-q"]
+
+# --- runtime: the default target ---------------------------------------------
+FROM base AS runtime
+
 COPY app ./app
 COPY README.md ./
 RUN uv sync --locked --no-dev
 
-RUN useradd --system --create-home --uid 1001 pdfkit \
+# uid and gid are both pinned to 1001 because docker-compose.yml has to name
+# them when it mounts the /tmp/pdfkit tmpfs; an auto-assigned gid would drift.
+RUN groupadd --system --gid 1001 pdfkit \
+ && useradd --system --create-home --uid 1001 --gid 1001 pdfkit \
  && mkdir -p /tmp/pdfkit \
  && chown -R pdfkit:pdfkit /tmp/pdfkit /app
 

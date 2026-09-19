@@ -15,6 +15,7 @@ services:
   backend:
     build:
       context: ./backend
+      target: runtime
     ports:
       - "8000:8000"
     environment:
@@ -22,5 +23,21 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
     tmpfs:
-      - /tmp/pdfkit
+      # A tmpfs mount masks whatever ownership the image gave this path, so it
+      # has to be handed to the non-root `pdfkit` user (uid 1001) explicitly —
+      # otherwise it arrives root-owned and every upload fails to write.
+      - /tmp/pdfkit:uid=1001,gid=1001,mode=0700
     restart: unless-stopped
+
+  # Test-only image: the same base plus dev dependencies and the suite, which
+  # the runtime target deliberately does not carry.
+  #   docker compose run --rm backend-tests
+  backend-tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      WORK_DIR: /tmp/pdfkit
+    tmpfs:
+      - /tmp/pdfkit

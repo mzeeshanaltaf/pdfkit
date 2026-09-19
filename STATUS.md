@@ -1,15 +1,16 @@
 # Status
 
-Last updated: 2026-09-18 (Phase 3)
+Last updated: 2026-09-19 (Phase 4)
 
 ## Current phase
 
-**Phase 3 — Browser tools batch 2** — ✅ complete. **All client-side processing is now done**:
-the six browser tools are real. Next up: **Phase 4 — Backend services (Compress, Protect,
-Unlock, OCR, Extract images) + tests**.
+**Phase 4 — Backend services** — ✅ complete. All five backend endpoints are implemented,
+tested (53 passing in Docker) and verified by curl against the running container.
+**Every one of the 10 tools now has real processing behind it**; what is missing is the
+wiring from the four remaining placeholder workspaces to these endpoints.
 
-See [`docs/phases/phase-4-backend-services.md`](docs/phases/phase-4-backend-services.md) for
-the task list.
+Next up: **Phase 5 — Wire backend tools into the UI**. See
+[`docs/phases/phase-5-*.md`](docs/phases/) for the task list.
 
 ## Tools live so far
 
@@ -21,7 +22,7 @@ the task list.
 | Organize PDF | `/organize-pdf` | ✅ real, browser-side |
 | Page numbers | `/add-page-numbers` | ✅ real, browser-side |
 | PDF to JPG | `/pdf-to-jpg` | ✅ page mode real; "Extract images" mode visible but disabled until Phase 5 |
-| Compress, OCR, Protect, Unlock | — | placeholder workspace (returns the first file unchanged) |
+| Compress, OCR, Protect, Unlock | — | backend endpoint real (Phase 4); **UI still the placeholder workspace** until Phase 5 |
 
 ## Phase checklist
 
@@ -29,7 +30,7 @@ the task list.
 - [x] Phase 1 — Shared UI shell (tool registry, landing page, `ToolShell`, dropzone, grids, result view)
 - [x] Phase 2 — Browser tools batch 1 (Merge, Rotate, Split)
 - [x] Phase 3 — Browser tools batch 2 (PDF→JPG page mode, Organize, Page Numbers)
-- [ ] Phase 4 — Backend services (Compress, Protect, Unlock, OCR, Extract images) + tests
+- [x] Phase 4 — Backend services (Compress, Protect, Unlock, OCR, Extract images) + tests
 - [ ] Phase 5 — Wire backend tools into UI
 - [ ] Phase 6 — Polish (responsive, metadata, edge cases, a11y)
 - [ ] Phase 7 — Deploy to Coolify
@@ -324,6 +325,138 @@ with pdf-lib and pdf.js — so these are assertions about the actual bytes, not 
   range does not exist." in an `alert`, and the CTA goes disabled.
 - 390px viewport on all three tools: `scrollWidth === clientWidth`, nothing overflows.
 
+## What Phase 4 built
+
+All under `backend/`. `backend/README.md` now carries the full endpoint and error-code
+table — that is the reference Phase 5 should code the client against.
+
+**Shared infrastructure**
+- `app/config.py` — `MAX_UPLOAD_MB` 50, `MAX_FILES_PER_REQUEST` 20, `MAX_CONCURRENT_JOBS` 2,
+  `MAX_OCR_LANGUAGES` 3, `QUEUE_TIMEOUT_SECONDS`, `CORS_ORIGINS`, and a per-operation
+  `TIMEOUTS` map read through `timeout_for()` (OCR gets 600 s, qpdf 60 s).
+- `app/deps.py` — `save_uploads()` streams each upload to a per-request temp directory in
+  1 MB chunks, rejecting >50 MB (413), non-`%PDF-` (415) and empty (400) as it goes.
+  `display_name` / `sanitise_filename` are the two name cleaners; `UploadBatch` owns the
+  temp directory and `upload_batch()` is the context manager that guarantees cleanup on
+  failure.
+- `app/services/runner.py` — the only place a subprocess is spawned. Global
+  `Semaphore(MAX_CONCURRENT_JOBS)`, per-operation `asyncio.wait_for`, an explicit
+  `process.kill()` on timeout, and `sanitise()` to strip absolute paths out of any tool
+  output before it reaches a client.
+- `app/services/responses.py` — `file_response()`: one output as itself, several as a
+  DEFLATE-1 zip, `Content-Disposition` from the original upload name, and a
+  `BackgroundTask` that deletes the temp directory after the body is sent.
+- `app/services/errors.py` — `mentions_password()` (reading tool stderr) and
+  `ensure_readable()` (the pypdf pre-check).
+- `app/services/passwords.py` — `validate_password`, and the two 0600 secret-file writers
+  that keep passwords out of argv.
+
+**Services and routers** — `compress` (Ghostscript), `protect` / `unlock` (qpdf),
+`ocr` (OCRmyPDF + the Tesseract language list), `images` (pdfimages + Pillow), each with a
+thin router in `app/routers/`.
+
+**Docker** — the Dockerfile is now multi-stage: `base` (system tools + prod deps) →
+`test` (dev deps + `tests/`) and `runtime` (the default target, the only one that ships).
+`docker-compose.yml` gained a `backend-tests` service behind the `test` profile.
+
+## Decisions made in Phase 4
+
+- **Ghostscript 10 exits `0` on a PDF it cannot decrypt**, writing a plausible-looking but
+  empty output. Left alone, compressing a locked file would have returned a blank document
+  with a 200. So `ensure_readable()` pre-checks every input with pypdf and returns
+  `422 password_required` before any native tool runs. It deliberately allows an
+  owner-password-only file through (encrypted, but opens with the empty password) because
+  every tool here reads one fine — there is a test for each half of that.
+- **pypdf pre-read failures are swallowed, not raised.** pypdf is far stricter than qpdf and
+  Ghostscript and throws a wide, undocumented spread of exceptions on damaged files.
+  Anything other than a clean "yes, encrypted" means we learned nothing, so the real tool
+  gets its turn rather than the request being refused.
+- **Protect uses `qpdf @argfile`, not `--password-file`.** Debian bookworm ships qpdf 11.3,
+  where the encryption passwords are *positional* — `--user-password=` / `--owner-password=`
+  only arrived in 11.7. An argument file is the only way to keep them out of `ps` on this
+  version. Unlock does use `--password-file=`, which 11.3 has. Verified empirically in the
+  container before either was written.
+- **A password containing `\r`, `\n` or `\0` is rejected with 400.** The argument file is
+  line-delimited, so a newline in a password is argument injection into qpdf. Escaping was
+  not worth it — no viewer's password box can produce one.
+- **`ToolResult` rather than exceptions for non-zero exits.** Unlock has to tell
+  "wrong password" from "broken file", which means reading stderr itself, so `run()` takes
+  `check=False` and hands the result back. With `check=True` (everything else) a non-zero
+  exit becomes a 500 carrying a sanitised excerpt.
+- **The temp directory is freed by a `BackgroundTask`, never a `yield` dependency.** Since
+  FastAPI 0.106 the exit half of a `yield` dependency runs *before* the response body is
+  sent, which would delete the file mid-stream. This is written at the top of `deps.py` so
+  nobody "simplifies" it back.
+- **Compress falls back to the original bytes when pdfwrite does not help.** An already-lean
+  or vector-heavy PDF regularly comes back larger; returning a worse file for the same wait
+  is not a result. `X-Original-Size` / `X-Result-Size` are then equal, and both headers are
+  in the CORS `expose_headers` list so the UI can actually read them.
+- **`/images/extract` always returns a zip**, even for one image, as the phase doc
+  specifies — see the open question below, because the browser-side PDF→JPG mode does not.
+- **Extraction drops images under 16 px** (spacers, rules, tracking pixels) and stops at 500
+  per file.
+- **Absent and empty `password` on `/protect` both give `400 password_missing`.** The field
+  is declared optional purely so that FastAPI's 422 validation envelope never appears for
+  one of them — the UI should only ever have to read `detail`.
+- **`osd` and `equ` are filtered out of `/ocr/languages`**: they are Tesseract's
+  script-detection and maths models, not languages. The list is cached behind an
+  `asyncio.Lock`; it only changes on redeploy.
+- **OCR uses `--skip-text`**, so a born-digital PDF passes through with its text intact
+  rather than gaining a second, worse layer. `TMPDIR` is pointed at the request's own
+  workspace so OCRmyPDF's scratch files die with the batch.
+- **The tmpfs mount has to name uid/gid 1001.** A tmpfs masks whatever ownership the image
+  gave the path, so `/tmp/pdfkit` arrived root-owned and every upload failed with
+  `PermissionError` even though the Dockerfile chowns it. `docker-compose.yml` now mounts it
+  `uid=1001,gid=1001,mode=0700` and the Dockerfile pins the gid so the two cannot drift.
+  **Phase 7 must carry this into the Coolify compose too.** `_scratch_root()` also falls back
+  to the platform temp dir with a warning rather than 500-ing, so a misconfigured deploy
+  degrades instead of breaking.
+- **The suite lives in its own build target.** Shipping pytest and the tests in the runtime
+  image to satisfy the phase doc's `docker compose run --rm backend pytest` was not worth it;
+  the command is `docker compose --profile test run --rm backend-tests` instead.
+
+## Phase 4 verification results
+
+`docker compose --profile test run --rm backend-tests pytest -q` → **53 passed**. Fixtures
+are generated at run time (a hand-assembled text PDF, a Pillow/DejaVu image-only PDF, a
+gradient photo PDF, and two qpdf-encrypted variants), so no binary test assets are committed.
+
+Three real bugs were found by the first test run and one more by the first curl run; all four
+are fixed and each now has a regression test:
+
+1. Ghostscript's silent-success-on-encrypted-input, above.
+2. `/protect` with an empty password returned FastAPI's 422 envelope rather than our 400.
+3. The 415 message renamed the user's file before quoting it back — "notes.txt.pdf is not a
+   PDF file."
+4. Zip downloads were named `pdfkit-compressed.zip.zip`, because `sanitise_filename` forces
+   `.pdf` and `sanitise_archive_name` then appended `.zip` to the whole thing.
+
+Then, against `docker compose up backend` (the real runtime image, non-root, tmpfs):
+
+- `GET /health` → `{"status":"ok"}`; `GET /ocr/languages` → `[{"code":"eng","name":"English"}]`.
+- **Compress** a 318,670-byte photo PDF at `recommended` → 81,615 bytes, `%PDF-`,
+  `X-Original-Size: 318670`, `X-Result-Size: 81615`,
+  `Content-Disposition: attachment; filename="photo-compressed.pdf"`.
+- **Compress no-gain**: `sample-text.pdf` at `extreme` → output **byte-identical** to the
+  input, both size headers 3795.
+- **Compress two files** → `application/zip`, `pdfkit-compressed.zip`, entries
+  `sample-text-compressed.pdf` + `photo-compressed.pdf`.
+- **Protect → unlock**: `sample-text.pdf` + password `correct horse` → 4,656-byte encrypted
+  PDF; unlocking it with no password → `422 password_required`, with `wrong` →
+  `422 wrong_password`, with the right one → `200` and a valid 3,960-byte PDF.
+- The committed `sample-protected.pdf` behaves identically (`422` without, `200` with
+  `hunter2`).
+- **OCR**: `pdftotext` on the input reports 0 non-space characters; after `POST /ocr` it
+  reports `INVOICE 1 INVOICE 2`. (Not with `sample-scanned.pdf` — see the open question.)
+- **Extract images** from the photo PDF → `photo-images.zip` holding
+  `photo-image-001.jpg`, a real 1600×2200 JPEG; `high` (365,752 B) > `normal` (295,003 B).
+  A text-only PDF → `422 no_images_found`.
+- **Rejections**: `notes.txt` → `415 "notes.txt is not a PDF file."`; a 51 MB file →
+  `413 "huge.pdf is over the 50 MB limit."`; `level=maximum` and `languages=eng,klingon` →
+  400 with a readable message.
+- **No leaks**: after all of the above, `ls -A /tmp/pdfkit` inside the container is empty —
+  every request cleaned up after itself.
+
 ## Test fixtures
 
 `frontend/test-fixtures/` is committed and shared by phases 2-6:
@@ -342,14 +475,44 @@ the backend image; the script prints the command.
 - The shadcn `Progress` component does not emit `aria-valuenow`, so upload progress is only
   announced through the `aria-live` stage text. Worth revisiting in Phase 6 (a11y).
 - `starlette` warns that `httpx` with `TestClient` is deprecated in favour of `httpx2`.
-  Harmless now; revisit if the backend test suite grows in Phase 4.
+  Still harmless at 53 tests; it is the only warning the suite emits.
 - Traefik default request body limit vs. the 50 MB upload cap — still flagged for Phase 7.
+- **`sample-scanned.pdf` cannot demonstrate OCR.** `make-test-fixtures.mjs` draws "five thick
+  vertical strokes… a word-shaped smudge", not glyphs, so Tesseract correctly finds nothing
+  and the OCR output has an empty text layer. It is still a perfectly good *image-only*
+  fixture (which is all phases 2–3 needed), but Phase 5 cannot use it to eyeball the OCR tool
+  in the browser. Fix when Phase 5 needs it: have the generator draw real lettering — the
+  backend suite's `build_scanned_pdf()` in `backend/tests/conftest.py` shows the shape of it
+  (Pillow + DejaVu at 150 dpi, which OCRs cleanly). Left alone here because swapping a
+  fixture that phases 2–3 assert against is a decision for the phase that needs the change.
+- **`/images/extract` always returns a zip, even for one image**, as the phase doc specifies —
+  but the browser-side PDF→JPG page mode returns a bare JPEG for a single page. Phase 5 wires
+  both into the *same* tool, so decide then whether the two modes should agree; the fix is one
+  line in `app/services/images.py` (return the entries instead of pre-zipping) if they should.
+- The `X-Original-Size` / `X-Result-Size` headers are only readable cross-origin because they
+  are in `expose_headers` in `main.py`. If a reverse proxy strips them in Phase 7, the
+  compress UI silently loses its before/after numbers.
 
 ## Notes for the next session
 
-- **Phase 4 is backend work** (`backend/`, FastAPI + `uv`): Compress, Protect, Unlock, OCR
-  and extract-images, plus tests. Nothing in `frontend/` needs to change for it — Phase 5 is
-  what wires those endpoints into the four remaining placeholder workspaces.
+- **Phase 5 is frontend work**: wire Compress, Protect, Unlock, OCR and PDF→JPG's
+  "Extract images" mode to the endpoints Phase 4 built. **Read `backend/README.md` first** —
+  it has the field names, the response shapes and the full error-`detail` table, which is
+  what the client needs to branch on (`password_required` → show the password field,
+  `wrong_password` → mark it wrong, `no_images_found`, `server_busy`, `processing_timed_out`).
+- **Run the backend while working on Phase 5**: `docker compose up backend`, and set
+  `NEXT_PUBLIC_API_URL=http://localhost:8000` for `npm run dev`. CORS already allows
+  `localhost:3000` and `127.0.0.1:3000`.
+- **Backend commands**, for reference:
+  - `docker compose up backend` — the runtime image, port 8000.
+  - `docker compose --profile test run --rm backend-tests` — the suite (53 tests).
+  - `docker compose --profile test build backend-tests` after changing `app/` or `tests/`.
+  - Note the phase doc's `docker compose run --rm backend pytest` does **not** work: the
+    runtime image deliberately carries neither pytest nor the tests.
+- **When adding a backend endpoint**: service in `app/services/`, thin router in
+  `app/routers/`, register it in `app/routers/__init__.py`'s `ROUTERS`. Never call
+  `asyncio.create_subprocess_exec` directly — go through `app/services/runner.py`, which owns
+  the concurrency limit, the timeout and stderr sanitising.
 - **The frontend pattern, now proven three times over** (`merge|rotate|split` and
   `pdf-to-jpg|organize|page-numbers`): a `<tool>-workspace.tsx` holding whatever state
   `process` needs and rendering `<ToolShell>`, a `<tool>-options.tsx` rendered inside the
