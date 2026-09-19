@@ -6,16 +6,20 @@ page into a document. That is what makes the result editable, and it is also
 why it needs text to work with: a scan has none until OCR puts some there,
 which is what ``ocr="auto"`` is for.
 
-It is invoked through its own ``pdf2docx convert`` CLI rather than imported.
-Two reasons: ``app.services.runner`` can only enforce a timeout on something it
-can kill, and keeping its AGPL PyMuPDF engine in a separate process is the same
-posture this image already has with Ghostscript.
+It runs in a subprocess rather than in-process. Two reasons:
+``app.services.runner`` can only enforce a timeout on something it can kill,
+and keeping its AGPL PyMuPDF engine in a separate process is the same posture
+this image already has with Ghostscript. That subprocess is
+``app.tools.pdf2docx_cli`` rather than pdf2docx's own ``pdf2docx convert``,
+because the stock library drops the spaces between words on PDFs that position
+each word individually — see that module for what it does about it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -28,6 +32,11 @@ from app.services.runner import run, sanitise
 from app.services.text_layer import pages_without_text, reveal_text
 
 logger = logging.getLogger(__name__)
+
+# The directory the `app` package lives in, so `-m app.tools.pdf2docx_cli`
+# resolves whatever the working directory happens to be — uvicorn in the
+# container starts in /app, pytest on a developer machine does not.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
 async def _prepare(upload: SavedUpload, scratch: Path, languages: list[str]) -> Path:
@@ -72,9 +81,12 @@ async def to_word_one(
 
     destination = workspace / f"{upload.path.stem}.docx"
     result = await run(
-        ["pdf2docx", "convert", str(source), str(destination)],
+        # sys.executable, not "python": the venv interpreter is the one pdf2docx
+        # is installed into.
+        [sys.executable, "-m", "app.tools.pdf2docx_cli", str(source), str(destination)],
         operation="word",
         check=False,
+        cwd=_PACKAGE_ROOT,
     )
 
     if not result.ok or not destination.exists():

@@ -20,6 +20,10 @@ from app.main import app
 
 ENCRYPTED_PASSWORD = "hunter2"
 
+# The words build_gapped_text_pdf() lays out, one Tj each, with no space
+# character anywhere in the content stream.
+GAPPED_WORDS = ("Spaces", "are", "implied", "here")
+
 # Docker-only tools. Locally the suite still runs; the tests that need them skip.
 requires_qpdf = pytest.mark.skipif(
     shutil.which("qpdf") is None, reason="qpdf is only installed in the backend image"
@@ -37,7 +41,7 @@ requires_poppler = pytest.mark.skipif(
 )
 
 requires_pdf2docx = pytest.mark.skipif(
-    shutil.which("pdf2docx") is None,
+    importlib.util.find_spec("pdf2docx") is None,
     reason="pdf2docx is only installed in the backend image",
 )
 
@@ -130,6 +134,54 @@ def build_text_pdf(pages: int = 3) -> bytes:
         + b" /Kids [" + kids + b"] >>"
     )
     assert tree == pages_id, "page objects must be laid out before the page tree"
+    catalog = add(b"<< /Type /Catalog /Pages " + str(tree).encode() + b" 0 R >>")
+    return assemble_pdf(objects, catalog)
+
+
+def build_gapped_text_pdf() -> bytes:
+    """A PDF that writes no spaces at all and lets the geometry imply them.
+
+    Perfectly legal, and common in bank and government output: each word is
+    its own ``Tj``, moved into place by a ``Td`` offset wide enough to leave a
+    gap. A reader has to infer the word breaks — see ``app.tools.pdf2docx_cli``
+    for what pdf2docx does with them unaided.
+
+    Courier is what makes the offsets easy to reason about: every glyph is
+    0.6 em, so at 12 pt one character is 7.2 pt and a word of *n* characters
+    followed by one space advances ``(n + 1) * 7.2``.
+    """
+    objects: list[bytes] = []
+
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+
+    font = add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier "
+        b"/Encoding /WinAnsiEncoding >>"
+    )
+
+    lines = [b"BT", b"/F1 12 Tf", b"72 700 Td"]
+    for word in GAPPED_WORDS:
+        lines.append(b"(" + word.encode("ascii") + b") Tj")
+        lines.append(f"{(len(word) + 1) * 7.2:.4g} 0 Td".encode("ascii"))
+    lines.append(b"ET")
+    stream = b"\n".join(lines)
+
+    content = add(
+        b"<< /Length "
+        + str(len(stream)).encode()
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream"
+    )
+    page = add(
+        b"<< /Type /Page /Parent 4 0 R /MediaBox [0 0 595 842] "
+        b"/Resources << /Font << /F1 " + str(font).encode() + b" 0 R >> >> "
+        b"/Contents " + str(content).encode() + b" 0 R >>"
+    )
+    tree = add(b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    assert tree == 4, "the page object refers to the page tree by number"
     catalog = add(b"<< /Type /Catalog /Pages " + str(tree).encode() + b" 0 R >>")
     return assemble_pdf(objects, catalog)
 
@@ -382,6 +434,11 @@ def encrypt_pdf(
 @pytest.fixture(scope="session")
 def text_pdf() -> bytes:
     return build_text_pdf()
+
+
+@pytest.fixture(scope="session")
+def gapped_pdf() -> bytes:
+    return build_gapped_text_pdf()
 
 
 @pytest.fixture(scope="session")

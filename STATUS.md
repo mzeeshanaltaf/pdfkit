@@ -1,6 +1,7 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages + two new tools)
+Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages + two new tools
++ the PDF-to-Word whitespace fix)
 
 ## Current phase
 
@@ -135,6 +136,64 @@ encrypted-PDF guard. Both new routes serve exactly one `h1`, ~920 crawlable word
 JSON-LD block, and neither overflows at 390 px.
 
 The harness lives in the session scratchpad, not the repo, as in Phase 6.
+
+## Fix: PDF to Word ran the words together (post-Phase 6)
+
+Reported against a bank certificate (`PDFKit Samples/HBL_CC_Tax_Certificate.pdf`):
+the .docx came out as `Thisistocertifythat…`. iLovePDF handled the same file
+correctly, so it was ours.
+
+**Cause.** A PDF need not write a space character. This one does not write a
+single one: each word is its own `Tj`, moved into place by a `Td` offset, and
+the reader is expected to infer the gap from the geometry. MuPDF does infer it
+— `page.get_text()` returns the sentence spaced correctly — but because each
+word arrived with its own positioning, MuPDF puts each synthesised space in a
+**span of its own**. pdf2docx then drops every span whose text is blank and
+which carries no styling (`pdf2docx/text/Spans.py`, `Spans.restore`), on the
+assumption that such a span is a stray blank. On this document that is every
+space in the file.
+
+Nothing in our code was wrong, which is why it took reading pdf2docx to find:
+real spaces inside a `Tj` survived, so the header lines ("Dated : 05/07/2026",
+"Advance Tax Certificate") looked fine and only the body was affected.
+
+**Fix.** `app/tools/pdf2docx_cli.py` — a shim that patches `Spans.restore` to
+keep a blank span when it sits *between* two spans with content, and to go on
+discarding the ones at either end. `app/services/word.py` now runs
+`python -m app.tools.pdf2docx_cli <in> <out>` instead of pdf2docx's own
+`pdf2docx convert`; it is still a subprocess, so the runner's timeout and the
+AGPL separation are unchanged. This follows the `app/tools/anydoc_cli.py`
+pattern already in the tree.
+
+**Why interior-only is the safe form of the patch.** A span between two others
+lies inside the line's existing bounding box, so no line's geometry moves — and
+pdf2docx's paragraph and table detection works on line bboxes. That was checked
+rather than assumed: the line bboxes come out **bit-identical** with and without
+the shim on all five documents below, so only the text of the runs differs.
+
+| Document | Line bboxes | Paragraph/table structure | Text |
+|---|---|---|---|
+| HBL_CC_Tax_Certificate (the report) | identical | identical | spaces restored |
+| HBL_Tax_Certificate_TDR | identical | identical | spaces restored |
+| BrainyDocs profile (4 MB) | identical | identical | unchanged |
+| `sample-text.pdf` fixture | identical | identical | unchanged |
+| Folksam MC, pp. 5–14 (280 paragraphs) | identical | identical | unchanged |
+
+**A test that was lying.** `docx_text()` in `tests/test_convert.py` flattened the
+document by replacing every XML tag with a space — so it invented a space at
+every run boundary and reported this bug's output as correctly spaced. It now
+concatenates the `<w:t>` nodes with nothing between them, which is what Word
+renders. The new `test_word_keeps_the_spaces_a_pdf_only_implies` was confirmed
+to fail (`assert 'Spaces are implied here' in 'Spacesareimpliedhere'`) with the
+shim disabled. Its fixture, `build_gapped_text_pdf()`, is a Courier document
+whose content stream contains no space character at all.
+
+Suite: 107 passed. Verified end-to-end against the live container:
+`POST /convert/word` on the reported file now returns properly spaced text.
+
+**One thing that is not a bug:** the output reads `MUHAMMAD ZEESHAN ALT AF`. The
+PDF places a full word-gap between `ALT` and `AF`, so every geometry-honouring
+reader splits it — pypdf does too. The name is broken in the source.
 
 ## Contact & Privacy pages (2026-09-19)
 

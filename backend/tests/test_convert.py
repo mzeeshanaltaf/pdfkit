@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from html import unescape
 
 import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfReader, PdfWriter
 
 from tests.conftest import (
+    GAPPED_WORDS,
     has_scalable_font,
     requires_anydoc,
     requires_pdf2docx,
@@ -19,7 +21,8 @@ from tests.conftest import (
     zip_names,
 )
 
-_TAG = re.compile(r"<[^>]+>")
+_PARAGRAPH = re.compile(r"<w:p[ >].*?</w:p>", re.S)
+_RUN_TEXT = re.compile(r"<w:t(?: [^>]*)?>(.*?)</w:t>", re.S)
 
 
 @pytest.fixture(scope="module")
@@ -39,14 +42,21 @@ def mixed_pdf(text_pdf: bytes, scanned_pdf: bytes) -> bytes:
 
 
 def docx_text(payload: bytes) -> str:
-    """The visible text of a .docx, with the markup stripped.
+    """The visible text of a .docx, one line per paragraph.
 
-    Word splits a sentence across as many runs as it likes, so the document
-    body has to be flattened before anything can be asserted about it.
+    Word splits a sentence across as many runs as it likes, so the runs have
+    to be concatenated — and concatenated with *nothing* between them, exactly
+    as Word renders them. Stripping the markup by replacing each tag with a
+    space would be simpler and would quietly invent a space at every run
+    boundary, which is precisely the thing some of these tests check for.
     """
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         document = archive.read("word/document.xml").decode("utf-8", "replace")
-    return " ".join(_TAG.sub(" ", document).split())
+    paragraphs = (
+        unescape("".join(_RUN_TEXT.findall(paragraph)))
+        for paragraph in _PARAGRAPH.findall(document)
+    )
+    return "\n".join(line for line in paragraphs if line.strip())
 
 
 # --- markdown ----------------------------------------------------------------
@@ -154,6 +164,21 @@ def test_word_carries_the_text(client: TestClient, text_pdf: bytes) -> None:
     assert "report.docx" in response.headers["content-disposition"]
     assert "wordprocessingml" in response.headers["content-type"]
     assert "Page 1 of 3" in docx_text(response.content)
+
+
+@requires_pdf2docx
+def test_word_keeps_the_spaces_a_pdf_only_implies(
+    client: TestClient, gapped_pdf: bytes
+) -> None:
+    # The document writes no space character at all — the gaps between words
+    # are pure geometry. Left to itself pdf2docx discards them and produces
+    # "Spacesareimpliedhere"; app.tools.pdf2docx_cli is what stops it.
+    response = client.post("/convert/word", files=[upload("bank.pdf", gapped_pdf)])
+    assert response.status_code == 200
+
+    text = docx_text(response.content)
+    assert " ".join(GAPPED_WORDS) in text
+    assert "".join(GAPPED_WORDS) not in text
 
 
 @requires_pdf2docx

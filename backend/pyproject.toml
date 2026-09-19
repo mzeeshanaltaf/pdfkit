@@ -17,9 +17,10 @@ dependencies = [
     "fonttools>=4.55",
     # PDF → Markdown. Converts locally; the hosted-OCR path is never used.
     "firecrawl-anydoc>=0.2.4",
-    # PDF → Word. Invoked through its own `pdf2docx convert` CLI, never imported,
-    # so its AGPL PyMuPDF engine stays a separate process — the same posture the
-    # image already has with Ghostscript.
+    # PDF → Word. Driven from `app/tools/pdf2docx_cli.py` in a subprocess of its
+    # own — never imported into the server — so its AGPL PyMuPDF engine stays a
+    # separate process, the same posture the image already has with Ghostscript.
+    # That shim exists because the stock library drops inter-word spaces; see it.
     "pdf2docx>=0.5.13",
 ]
 
