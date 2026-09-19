@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Mail } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -11,6 +11,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ACCENT_TILE_CLASS, TOOLS, toolHref } from "@/lib/tools";
@@ -71,8 +72,28 @@ export function SiteHeader() {
                 </DropdownMenuItem>
               );
             })}
+
+            {/* The header's Contact link is hidden below `sm`, so the menu carries it too. */}
+            <DropdownMenuSeparator className="sm:hidden" />
+            <DropdownMenuItem asChild className="sm:hidden">
+              <Link href="/contact" className="gap-2.5">
+                <span className="flex size-6 items-center justify-center rounded-md bg-muted">
+                  <Mail className="size-3.5" aria-hidden />
+                </span>
+                Contact
+              </Link>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <Button
+          asChild
+          variant="ghost"
+          size="sm"
+          className={cn("hidden sm:inline-flex", pathname === "/contact" && "bg-muted text-foreground")}
+        >
+          <Link href="/contact">Contact</Link>
+        </Button>
 
         <div className="ml-auto sm:ml-2">
           <ThemeToggle />

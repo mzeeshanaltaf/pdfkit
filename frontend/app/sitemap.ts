@@ -28,5 +28,19 @@ export default function sitemap(): MetadataRoute.Sitemap {
       // does not exist. They sit below the homepage only because it links to all of them.
       priority: 0.8,
     })),
+    // Support pages. They are linked from every footer but are not what anyone searches
+    // for, so they sit well below the tools.
+    {
+      url: `${SITE_URL}/contact`,
+      lastModified,
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
+    {
+      url: `${SITE_URL}/privacy`,
+      lastModified,
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
   ];
 }

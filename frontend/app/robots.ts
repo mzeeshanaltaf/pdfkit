@@ -9,7 +9,8 @@ import { SITE_URL } from "@/lib/constants";
  */
 export default function robots(): MetadataRoute.Robots {
   return {
-    rules: { userAgent: "*", allow: "/" },
+    // `/api/contact` is the one exception — a POST-only endpoint with nothing to index.
+    rules: { userAgent: "*", allow: "/", disallow: "/api/" },
     sitemap: `${SITE_URL}/sitemap.xml`,
     host: SITE_URL,
   };

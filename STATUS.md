@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 6 + SEO pass)
+Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages)
 
 ## Current phase
 
@@ -8,9 +8,57 @@ Last updated: 2026-09-19 (Phase 6 + SEO pass)
 cross-tool consistency and accessibility all went through the full verification matrix, and
 the three defects it turned up are fixed. **The app is deploy-ready.**
 
-An **SEO pass** ran after Phase 6 (see below). Still deploy-ready.
+An **SEO pass** and then a **Contact + Privacy** addition ran after Phase 6 (see below).
+Still deploy-ready.
 
 Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](docs/phases/).
+
+## Contact & Privacy pages (2026-09-19)
+
+Built with the `nextjs-contact-form` skill. Two new routes, both in the `(site)` group so
+they inherit the footer.
+
+**`/contact`** — Name + Email + Message, posting to `app/api/contact/route.ts`, which
+forwards to an n8n webhook with an `x-api-key` header.
+
+- **Progressive enhancement is load-bearing, don't simplify it.** The `<form>` keeps a real
+  `action="/api/contact" method="post"` *and* an `onSubmit` fetch. A `"use client"` form
+  inside a server component can render correct HTML and still fail to hydrate silently —
+  removing the native path turns that into dead UI with no error. The route therefore parses
+  both JSON and url-encoded bodies, and answers native posts with a **303** (not 307) so the
+  browser re-fetches with GET instead of replaying the POST.
+- **Honeypot** is named `hp_field` on purpose. A semantic name (`company`, `phone`, …) would
+  be filled by browser/Google autofill and flag real people as bots. Tripping it returns
+  success and sends nothing, so bots get no signal to adapt.
+- **Rate limit**: `lib/rate-limit.ts`, Upstash sliding window, 5 per 10 min per IP, prefix
+  `pdfkit:contact`. It **fails open** when the Upstash vars are absent — a misconfigured env
+  must never hard-break the form. The limit check runs *before* the webhook-config check,
+  which is also how it can be tested without sending mail.
+- `components/ui/textarea.tsx` was added (shadcn had not installed one); the form otherwise
+  uses the project's `Input`, `Label`, `Button`.
+
+**`/privacy`** — Privacy policy. The "runs in your browser" and "uses the server" tool lists
+are derived from `TOOLS[].runsIn`, so they cannot drift from the registry.
+
+**Wiring** — Contact is in the header (hidden below `sm`, so it is also in the "All tools"
+dropdown behind a separator) and, with Privacy, in a new secondary column in the footer. The
+footer gained the "Developed with 💖 by [Zeeshan Altaf](https://zeeshanai.cloud)" credit.
+Both routes are in `sitemap.ts`; `robots.ts` now disallows `/api/`.
+
+**Env** — four new server-only vars, none `NEXT_PUBLIC_` (they would leak into the client
+bundle): `N8N_CONTACT_WEBHOOK_URL`, `N8N_API_KEY`, `UPSTASH_REDIS_REST_URL`,
+`UPSTASH_REDIS_REST_TOKEN`. They live in `frontend/.env.local` (Next reads from the app dir,
+not the repo root) and are documented in both `.env.example` files. They are **runtime** env,
+read per-request in the route handler — passed through `docker-compose.yml`'s frontend
+`environment:` block, not as build args.
+
+**Verified against `next start`** — honeypot returns 200 and sends nothing; missing fields
+400; bad email 400; native url-encoded post 303 → `/contact?error=email`; rate limiter
+allows 5 then 429s on the 6th for a fixed IP; Upstash `/ping` → PONG; one real submission
+returned `{"success":true}` from the live n8n webhook. All three of `/`, `/contact`,
+`/privacy` render exactly one `h1`, and the header/footer links resolve on tool pages too.
+`next build`, `tsc --noEmit` and `eslint` all clean.
+
 
 ## SEO pass (2026-09-19)
 

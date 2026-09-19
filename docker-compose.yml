@@ -8,6 +8,13 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: production
+      # Contact form. Read at request time in the route handler, so these are runtime
+      # env — not build args — and must never be NEXT_PUBLIC_.
+      N8N_CONTACT_WEBHOOK_URL: ${N8N_CONTACT_WEBHOOK_URL:-}
+      N8N_API_KEY: ${N8N_API_KEY:-}
+      # Optional: unset, the rate limiter fails open and the form still works.
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
     depends_on:
       - backend
     restart: unless-stopped
