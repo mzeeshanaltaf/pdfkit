@@ -24,6 +24,11 @@ const PlaceholderWorkspace = lazyWorkspace<{ toolId: ToolId }>(() => import("./t
 
 const WORKSPACES: Partial<Record<ToolId, ComponentType>> = {
   merge: lazyWorkspace(() => import("@/components/tools/merge/merge-workspace")),
+  organize: lazyWorkspace(() => import("@/components/tools/organize/organize-workspace")),
+  "page-numbers": lazyWorkspace(
+    () => import("@/components/tools/page-numbers/page-numbers-workspace"),
+  ),
+  "pdf-to-jpg": lazyWorkspace(() => import("@/components/tools/pdf-to-jpg/pdf-to-jpg-workspace")),
   rotate: lazyWorkspace(() => import("@/components/tools/rotate/rotate-workspace")),
   split: lazyWorkspace(() => import("@/components/tools/split/split-workspace")),
 };

@@ -1,7 +1,7 @@
 "use client";
 
-import { SortableGrid } from "./sortable-grid";
 import { PageCard } from "./page-card";
+import { SortableGrid } from "./sortable-grid";
 import type { ToolFile, ToolPage } from "./types";
 
 interface PageGridProps {
@@ -10,11 +10,19 @@ interface PageGridProps {
   onReorder: (activeId: string, overId: string) => void;
   onRotate?: (id: string) => void;
   onDelete?: (id: string) => void;
+  onInsertAfter?: (id: string) => void;
 }
 
-/** Page-level canvas used by Organize, Split and Page numbers. */
-export function PageGrid({ pages, files, onReorder, onRotate, onDelete }: PageGridProps) {
-  const filesById = new Map(files.map((file) => [file.id, file]));
+/** Page-level canvas: every page of every loaded file in one combined, reorderable grid. */
+export function PageGrid({
+  pages,
+  files,
+  onReorder,
+  onRotate,
+  onDelete,
+  onInsertAfter,
+}: PageGridProps) {
+  const indexById = new Map(files.map((file, index) => [file.id, index]));
   // Only worth labelling the source when pages come from more than one document.
   const showSource = files.length > 1;
 
@@ -26,21 +34,20 @@ export function PageGrid({ pages, files, onReorder, onRotate, onDelete }: PageGr
       className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8"
     >
       {pages.map((page, index) => {
-        const source = filesById.get(page.fileId);
-        if (!source) return null;
+        const sourceIndex = page.fileId === null ? undefined : indexById.get(page.fileId);
+        // A page whose file has been removed is on its way out; skip it for this render.
+        if (page.fileId !== null && sourceIndex === undefined) return null;
+
         return (
           <PageCard
             key={page.id}
             page={page}
-            file={source.file}
+            file={sourceIndex === undefined ? null : files[sourceIndex].file}
             position={index + 1}
             onRotate={onRotate}
             onDelete={onDelete}
-            sourceLabel={
-              showSource
-                ? String.fromCharCode(65 + files.findIndex((file) => file.id === page.fileId))
-                : undefined
-            }
+            onInsertAfter={onInsertAfter}
+            sourceIndex={showSource ? sourceIndex : undefined}
           />
         );
       })}

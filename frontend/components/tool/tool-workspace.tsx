@@ -5,10 +5,8 @@ import { useCallback } from "react";
 import { formatBytes, stripExtension } from "@/lib/format";
 import { getTool, type ToolId } from "@/lib/tools";
 
-import { PageGrid } from "./page-grid";
 import { ToolShell } from "./tool-shell";
 import { useToolShell } from "./tool-shell-context";
-import { useToolPages } from "./use-tool-pages";
 import type { ToolRunContext, ToolResult } from "./types";
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -57,25 +55,6 @@ function usePlaceholderProcess(toolId: ToolId) {
   );
 }
 
-/** Tools whose canvas is a page grid rather than a file grid. */
-const PAGE_LEVEL_TOOLS: ReadonlySet<ToolId> = new Set(["organize", "page-numbers"]);
-
-/** The page-level canvas, wired to the shared page state so reorder and rotate work. */
-function PageCanvas() {
-  const { files } = useToolShell();
-  const { pages, reorderPages, rotatePage, deletePage } = useToolPages(files);
-
-  return (
-    <PageGrid
-      pages={pages}
-      files={files}
-      onReorder={reorderPages}
-      onRotate={rotatePage}
-      onDelete={deletePage}
-    />
-  );
-}
-
 /** Summary panel standing in for the tool's real options. */
 function PlaceholderOptions() {
   const { files, tool } = useToolShell();
@@ -121,7 +100,6 @@ export default function ToolWorkspace({ toolId }: { toolId: ToolId }) {
       process={process}
       info={tool.description}
       options={<PlaceholderOptions />}
-      canvas={PAGE_LEVEL_TOOLS.has(toolId) ? <PageCanvas /> : undefined}
     />
   );
 }

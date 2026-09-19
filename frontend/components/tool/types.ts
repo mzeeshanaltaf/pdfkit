@@ -24,8 +24,9 @@ export interface ToolFile {
 /** A single page in a page-level grid (Organize, Split preview, Page numbers preview). */
 export interface ToolPage {
   id: string;
-  fileId: string;
-  /** 1-based page number inside its source file. */
+  /** null for a blank page the user inserted, which has no source document behind it. */
+  fileId: string | null;
+  /** 1-based page number inside its source file; 0 for a blank page. */
   pageNumber: number;
   rotation: number;
 }
