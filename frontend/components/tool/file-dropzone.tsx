@@ -45,10 +45,11 @@ export function FileDropzone({ tool, addFiles }: FileDropzoneProps) {
         </span>
 
         {/*
-          The page heading, not a restatement of the button below it. In the configure phase
-          the sidebar carries the same `h1`, so a tool page has exactly one either way.
+          The workspace heading, not a restatement of the button below it. An `h2`, not an
+          `h1`: the route's single `h1` is the server-rendered one in `ToolSeoSection`, which
+          is the only heading a crawler sees at all — this whole tree is `ssr: false`.
         */}
-        <h1 className="mt-5 text-xl font-semibold tracking-tight">{tool.name}</h1>
+        <h2 className="mt-5 text-xl font-semibold tracking-tight">{tool.name}</h2>
         <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
           {tool.description}
         </p>

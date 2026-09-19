@@ -67,7 +67,7 @@ export default function OpengraphImage() {
         </div>
 
         <div style={{ display: "flex", fontSize: 26, color: BRAND_HEX }}>
-          No account, no uploads for most tools, nothing kept.
+          Start free. No account, no uploads for most tools, nothing kept.
         </div>
       </div>
     ),

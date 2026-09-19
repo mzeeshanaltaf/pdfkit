@@ -213,7 +213,7 @@ export function ToolShell({
       >
         <AlertTriangle className="size-9 text-destructive" aria-hidden />
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{tool.name} did not finish</h1>
+          <h2 className="text-2xl font-semibold tracking-tight">{tool.name} did not finish</h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
             {errorMessage ?? "Something went wrong."}
           </p>

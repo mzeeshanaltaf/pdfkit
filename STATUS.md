@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 6)
+Last updated: 2026-09-19 (Phase 6 + SEO pass)
 
 ## Current phase
 
@@ -8,7 +8,50 @@ Last updated: 2026-09-19 (Phase 6)
 cross-tool consistency and accessibility all went through the full verification matrix, and
 the three defects it turned up are fixed. **The app is deploy-ready.**
 
+An **SEO pass** ran after Phase 6 (see below). Still deploy-ready.
+
 Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](docs/phases/).
+
+## SEO pass (2026-09-19)
+
+Audited with the `seo-audit` skill against the real built output (`next build` + `next start`
++ curl), not against source.
+
+**The finding that mattered:** every tool route served **13 words of body text and no heading
+at all**. `ToolPage` is `dynamic(..., { ssr: false })`, so the `h1` and description existed
+only after hydration — the ten pages that should rank for "merge pdf", "compress pdf" and so
+on were effectively blank, with just 4 crawlable internal links each. The homepage was fine
+throughout (288 words, clean hierarchy, all 10 tool links).
+
+**What changed**
+
+- `lib/seo/tool-content.ts` — new. Per-tool search copy: `title`, `h1`, `howTo`, `intro`,
+  `steps`, `faqs`. Typed `Record<ToolId, ToolSeo>`, so a new tool will not compile without one.
+- `components/seo/tool-seo-section.tsx` — server-rendered section below each workspace,
+  carrying the page's single `h1`, the step list, the FAQs and links to all nine other tools.
+- `components/seo/json-ld.tsx` — `WebSite` + `WebApplication` on the homepage;
+  `BreadcrumbList` + `WebApplication` + `FAQPage` per tool. Rendered server-side, so it is in
+  the HTML. Deliberately no `HowTo` (Google retired those rich results in 2023).
+- `app/robots.ts`, `app/sitemap.ts`, `app/manifest.ts` — new, all generated from the registry.
+- `app/llms.txt/route.ts` — new, `force-static`. Tool list, privacy model and every FAQ, also
+  generated from the registry so it cannot drift.
+- Metadata titles now come from `TOOL_SEO[id].title` ("Merge PDF Files Online, Free and
+  Private" rather than "Merge PDF"), using ~47 of the ~60 characters a SERP shows.
+- Workspace headings demoted `h1` → `h2` (`file-dropzone`, `options-sidebar`, `result-view`,
+  `tool-shell` error state) so the one `h1` per page is the server-rendered one.
+- Footer added to `app/(tools)/layout.tsx`; `ToolPage` gained a `min-h-[calc(100svh-4rem)]`
+  floor so the workspace still owns the first viewport.
+- Protect's registry description lengthened (66 chars was under the ~70 floor); OG image
+  bottom line now opens with a call to action.
+
+**Verified after the change** — all 11 routes: title 45-52 chars, description 73-125, exactly
+one `h1`, 288-352 body words, 11 internal links, exactly one JSON-LD block, and every
+canonical matches its sitemap entry (the homepage is `SITE_URL` with **no** trailing slash,
+which is what Next resolves `canonical: "/"` to). `next build` and `eslint` both clean.
+
+**Open item for Phase 7:** `SITE_URL` falls back to `http://localhost:3000`. Coolify must set
+`NEXT_PUBLIC_SITE_URL` **at build time** — it is inlined, not read at runtime. If it is
+missing, every canonical, OG URL, sitemap entry and llms.txt link ships pointing at localhost.
 
 ## Tools live so far
 

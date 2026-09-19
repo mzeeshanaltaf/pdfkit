@@ -45,5 +45,15 @@ function WorkspaceFallback() {
 
 export function ToolPage({ toolId }: { toolId: ToolId }) {
   const Workspace = WORKSPACES[toolId];
-  return <Workspace />;
+
+  // The workspace used to be the only thing on the route, so `flex-1` was enough to make it
+  // fill the viewport. It now has the server-rendered `ToolSeoSection` as a sibling, and a
+  // flex child will happily shrink to share the space — hence the explicit floor of one
+  // viewport minus the 4rem header. The content below stays below the fold, where it was
+  // designed to be, and the options sidebar still runs full height.
+  return (
+    <div className="flex min-h-[calc(100svh-4rem)] flex-col">
+      <Workspace />
+    </div>
+  );
 }

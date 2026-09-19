@@ -28,9 +28,9 @@ export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
     <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-16 text-center">
       <div>
         <CheckCircle2 className="mx-auto size-10 text-brand" aria-hidden />
-        <h1 className="mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
+        <h2 className="mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
           {tool.name} is done
-        </h1>
+        </h2>
         {saved !== null && (
           <p className="mt-2 text-sm text-muted-foreground">
             {formatBytes(originalSize!)} to {formatBytes(resultSize!)}
@@ -56,7 +56,7 @@ export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
       </div>
 
       <div className="w-full max-w-lg border-t border-border pt-8">
-        <h2 className="text-sm font-medium text-muted-foreground">Continue to</h2>
+        <h3 className="text-sm font-medium text-muted-foreground">Continue to</h3>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {relatedTools(tool.id).map((next) => {
             const Icon = next.icon;

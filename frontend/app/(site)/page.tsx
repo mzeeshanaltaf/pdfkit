@@ -1,6 +1,7 @@
 import { FolderX, Laptop, UserX } from "lucide-react";
 
 import { ToolCard } from "@/components/landing/tool-card";
+import { SiteJsonLd } from "@/components/seo/json-ld";
 import { APP_DESCRIPTION, APP_TAGLINE } from "@/lib/constants";
 import { TOOLS } from "@/lib/tools";
 
@@ -66,6 +67,8 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+
+      <SiteJsonLd />
     </>
   );
 }

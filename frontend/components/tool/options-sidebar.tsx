@@ -29,9 +29,11 @@ export function OptionsSidebar({
 }: OptionsSidebarProps) {
   return (
     <aside className="flex w-full shrink-0 flex-col border-t border-border bg-background lg:h-[calc(100dvh-4rem)] lg:w-[380px] lg:border-t-0 lg:border-l xl:w-[420px]">
-      <h1 className="border-b border-border px-6 py-5 text-center text-2xl font-semibold tracking-tight">
+      {/* An `h2`, matching the dropzone: the route's `h1` is server-rendered in
+          `ToolSeoSection`, because this whole tree is `ssr: false`. */}
+      <h2 className="border-b border-border px-6 py-5 text-center text-2xl font-semibold tracking-tight">
         {title}
-      </h1>
+      </h2>
 
       <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
         {info && (

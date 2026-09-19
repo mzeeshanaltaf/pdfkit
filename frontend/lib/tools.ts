@@ -14,6 +14,7 @@ import {
 import type { Metadata } from "next";
 
 import { APP_NAME } from "./constants";
+import { TOOL_SEO } from "./seo/tool-content";
 
 /** The route `app/opengraph-image.tsx` is served from. Resolved against `metadataBase`. */
 const OG_IMAGE = {
@@ -170,7 +171,8 @@ export const TOOLS: Tool[] = [
     slug: "protect-pdf",
     name: "Protect PDF",
     tagline: "Lock a document with a password.",
-    description: "Encrypt a PDF so it cannot be opened without the password you set.",
+    description:
+      "Encrypt a PDF with a password so it cannot be opened by anyone who does not have it.",
     icon: Lock,
     accent: "rose",
     multiple: true,
@@ -232,7 +234,9 @@ export function toolMetadata(id: ToolId): Metadata {
   const shareTitle = `${tool.name} | ${APP_NAME}`;
 
   return {
-    title: tool.name,
+    // The search-facing title, which is longer and more explicit than the UI label: a tab
+    // reading "Merge PDF" wastes most of the ~60 characters a SERP will show.
+    title: TOOL_SEO[id].title,
     description: tool.description,
     alternates: { canonical: href },
     openGraph: {
