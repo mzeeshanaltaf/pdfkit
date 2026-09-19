@@ -50,18 +50,61 @@ def test_extreme_beats_less(client: TestClient, photo_pdf: bytes) -> None:
     assert sizes["extreme"] < sizes["less"]
 
 
-def test_returns_the_original_when_there_is_nothing_to_gain(
-    client: TestClient, text_pdf: bytes
-) -> None:
-    # A hand-built, already-minimal PDF comes back *larger* from pdfwrite, so the
-    # service must hand back the bytes it was given rather than a worse file.
+def test_never_hands_back_a_bigger_file(client: TestClient, text_pdf: bytes) -> None:
+    # A hand-built, already-minimal PDF comes back *larger* from pdfwrite. The
+    # service must drop that result rather than pass on a worse file for the
+    # same wait, and the headers must describe what was actually sent.
     response = client.post(
         "/compress", files=[upload("tiny.pdf", text_pdf)], data={"level": "extreme"}
     )
     assert response.status_code == 200
     assert len(response.content) <= len(text_pdf)
-    assert response.headers["X-Result-Size"] == str(len(text_pdf))
-    assert response.content == text_pdf
+    assert response.headers["X-Original-Size"] == str(len(text_pdf))
+    assert response.headers["X-Result-Size"] == str(len(response.content))
+
+
+def test_a_second_pass_does_not_undo_the_first(
+    client: TestClient, photo_pdf: bytes
+) -> None:
+    """Compressing an already-compressed file must not inflate it again."""
+    first = client.post(
+        "/compress", files=[upload("holiday.pdf", photo_pdf)], data={"level": "recommended"}
+    ).content
+    second = client.post(
+        "/compress", files=[upload("holiday.pdf", first)], data={"level": "recommended"}
+    ).content
+    assert len(second) <= len(first)
+
+
+def test_shrinks_a_vector_pdf_that_ghostscript_makes_bigger(
+    client: TestClient, vector_pdf: bytes
+) -> None:
+    """The regression this whole split exists for.
+
+    A print-driver PDF is all bezier paths and no images: pdfwrite hands back
+    something larger, so compression used to fall through to "return the
+    original" and report a 0% saving at every level. The content-stream
+    rewriter is what actually shrinks this document.
+    """
+    response = client.post(
+        "/compress",
+        files=[upload("villkor.pdf", vector_pdf)],
+        data={"level": "recommended"},
+    )
+    assert response.status_code == 200
+    assert len(response.content) < len(vector_pdf) * 0.9
+    assert len(PdfReader(io.BytesIO(response.content)).pages) == 3
+
+
+def test_the_lossless_level_still_shrinks_a_vector_pdf(
+    client: TestClient, vector_pdf: bytes
+) -> None:
+    """"Less compression" rounds no coordinates, and still wins on padding alone."""
+    response = client.post(
+        "/compress", files=[upload("villkor.pdf", vector_pdf)], data={"level": "less"}
+    )
+    assert response.status_code == 200
+    assert len(response.content) < len(vector_pdf)
 
 
 def test_several_files_come_back_as_a_zip(

@@ -244,7 +244,7 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
     howTo: "How to compress a PDF",
     intro: [
       "Compress PDF reduces the size of a document so it fits an email or an upload limit. Three levels let you trade size against fidelity, and the result screen reports exactly how much each file saved.",
-      "Compression needs Ghostscript, so this tool sends the file to the server, processes it and deletes it within the same request. Files are capped at 50 MB each.",
+      "Compression needs tools that do not run in a browser, so this one sends the file to the server, processes it and deletes it within the same request. Files are capped at 50 MB each.",
     ],
     steps: [
       {
@@ -263,7 +263,7 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
     faqs: [
       {
         q: "How much smaller will my PDF get?",
-        a: "It depends what is inside it. Scans and image-heavy documents often shrink a great deal. A file that is mostly text may barely change, because text is already compact.",
+        a: "It depends what is inside it. Scans and image-heavy documents often shrink by half or more. Documents made of vector drawing, such as anything printed through a Print to PDF driver, typically lose about a quarter. A file that is already lean may barely change, and the result screen tells you when that happens rather than claiming a saving.",
       },
       {
         q: "Is my file kept on the server?",

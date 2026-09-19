@@ -23,9 +23,9 @@ export default function CompressWorkspace() {
         { workingStage: "Compressing", fallbackName: "compressed.pdf" },
       );
 
-      // Ghostscript can come back with a bigger file than it was given, in which case the
-      // backend returns the original bytes and the two headers are equal — ResultView reads
-      // that as "already as small as it gets" rather than claiming a 0% saving.
+      // When neither compression route beats the upload, the backend returns the original
+      // bytes and the two headers come back equal — ResultView reads that as "already as
+      // small as it gets" rather than claiming a 0% saving.
       return {
         blob,
         filename,
@@ -40,7 +40,7 @@ export default function CompressWorkspace() {
     <ToolShell
       tool={tool}
       process={process}
-      info="Your files are sent to the server, compressed with Ghostscript, and deleted as soon as the result is on its way back."
+      info="Your files are sent to the server, compressed, and deleted as soon as the result is on its way back."
       options={<CompressOptions level={level} onChange={setLevel} />}
     />
   );

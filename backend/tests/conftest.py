@@ -7,6 +7,7 @@ import io
 import shutil
 import subprocess
 import zipfile
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -88,7 +89,11 @@ def build_text_pdf(pages: int = 3) -> bytes:
     )
     assert tree == pages_id, "page objects must be laid out before the page tree"
     catalog = add(b"<< /Type /Catalog /Pages " + str(tree).encode() + b" 0 R >>")
+    return assemble_pdf(objects, catalog)
 
+
+def assemble_pdf(objects: list[bytes], catalog: int) -> bytes:
+    """Wrap already-built object bodies in a header, xref table and trailer."""
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = [0]
     for index, body in enumerate(objects, start=1):
@@ -108,6 +113,63 @@ def build_text_pdf(pages: int = 3) -> bytes:
         + b"\n%%EOF\n"
     )
     return bytes(out)
+
+
+def build_vector_pdf(pages: int = 3, glyphs: int = 500) -> bytes:
+    """A PDF that is pure vector drawing, written the way a print driver writes it.
+
+    "Microsoft: Print To PDF" — the producer of the files this fixture stands in
+    for — has no font to embed, so it traces every glyph as filled bezier paths
+    and pads every single coordinate to six decimal places. The result carries
+    no images and no fonts, so it is exactly the document Ghostscript cannot
+    help with and the content-stream rewriter can.
+    """
+    objects: list[bytes] = []
+
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+
+    pages_id = pages * 2 + 1  # a content stream and a page object each
+    page_ids: list[int] = []
+    for number in range(pages):
+        drawing = bytearray(b"0.750000 0.000000 0.000000 -0.750000 0.000000 841.920044 cm\n")
+        # Deterministic, and shaped like the real thing: a fill colour, a move,
+        # a run of curves, a close and a fill, over and over.
+        for index in range(glyphs):
+            x = (index * 7 + number * 13) % 500
+            y = (index * 11 + number * 29) % 700
+            drawing += b"q\n1.000000 0.000000 0.000000 1.000000 "
+            drawing += f"{x}.190002 {y}.579956 cm\n".encode()
+            drawing += b"0.137255 0.121569 0.125490 rg\n0.000000 0.000000 m\n"
+            for step in range(6):
+                a, b, c = step * 1.5, step * 2.25, step * 0.75
+                drawing += f"{a:.6f} {b:.6f} {c:.6f} {a:.6f} {b:.6f} {c:.6f} c\n".encode()
+            drawing += b"h\nf\nQ\n"
+
+        packed = zlib.compress(bytes(drawing), 6)
+        content = add(
+            b"<< /Filter /FlateDecode /Length "
+            + str(len(packed)).encode()
+            + b" >>\nstream\n"
+            + packed
+            + b"\nendstream"
+        )
+        page_ids.append(
+            add(
+                b"<< /Type /Page /Parent "
+                + str(pages_id).encode()
+                + b" 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents "
+                + str(content).encode()
+                + b" 0 R >>"
+            )
+        )
+
+    kids = b" ".join(f"{page_id} 0 R".encode() for page_id in page_ids)
+    tree = add(b"<< /Type /Pages /Count " + str(pages).encode() + b" /Kids [" + kids + b"] >>")
+    assert tree == pages_id, "page objects must be laid out before the page tree"
+    catalog = add(b"<< /Type /Catalog /Pages " + str(tree).encode() + b" 0 R >>")
+    return assemble_pdf(objects, catalog)
 
 
 DEJAVU = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
@@ -208,6 +270,11 @@ def scanned_pdf() -> bytes:
 @pytest.fixture(scope="session")
 def photo_pdf() -> bytes:
     return build_photo_pdf()
+
+
+@pytest.fixture(scope="session")
+def vector_pdf() -> bytes:
+    return build_vector_pdf()
 
 
 @pytest.fixture(scope="session")

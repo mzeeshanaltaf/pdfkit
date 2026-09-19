@@ -5,7 +5,9 @@ the right sidebar → one big button → download. No accounts, no stored files:
 everything is per-request and ephemeral.
 
 Six tools run entirely in the browser (nothing is uploaded); the rest go to a small
-FastAPI service that shells out to Ghostscript, qpdf and Tesseract.
+FastAPI service that shells out to Ghostscript, qpdf and Tesseract — plus, for
+compression, a content-stream rewriter of its own, since Ghostscript makes a
+vector-heavy PDF *bigger* rather than smaller.
 
 | Runs in the browser | Runs on the backend |
 |---|---|
@@ -66,7 +68,7 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 | `NEXT_PUBLIC_API_URL` | frontend | `http://localhost:8000` | Baked in at **build** time — the Docker image must be rebuilt to change it |
 | `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins |
 | `MAX_UPLOAD_MB` | backend | `50` | Per-file cap; the frontend enforces the same number client-side |
-| `MAX_CONCURRENT_JOBS` | backend | `2` | Concurrent subprocess jobs (Ghostscript/qpdf/OCR) |
+| `MAX_CONCURRENT_JOBS` | backend | `2` | Concurrent heavy jobs — subprocesses (Ghostscript/qpdf/OCR) and compression's in-process stream rewrite share the limit |
 | `JOB_TIMEOUT_SECONDS` | backend | `180` | Wall-clock ceiling for one job |
 | `WORK_DIR` | backend | `/tmp/pdfkit` | Scratch space, mounted as tmpfs in compose |
 

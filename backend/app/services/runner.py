@@ -4,6 +4,10 @@ Every native tool (ghostscript, qpdf, ocrmypdf, pdfimages, tesseract) goes
 through :func:`run`, which gives us one place to enforce a concurrency limit and
 a timeout, and one place that decides how much of a tool's stderr a client is
 allowed to see.
+
+:func:`job_slot` exposes that same limit to work we do in-process rather than in
+a child — compression's content-stream rewrite is pure Python but just as
+CPU-hungry as Ghostscript, and must queue behind the same two slots.
 """
 
 from __future__ import annotations
@@ -12,7 +16,8 @@ import asyncio
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +62,25 @@ def sanitise(message: str) -> str:
     return cleaned
 
 
+@asynccontextmanager
+async def job_slot(operation: str) -> AsyncIterator[None]:
+    """Hold one of the global job slots, or give up with 503.
+
+    Waiting is bounded: a caller that cannot get a slot inside
+    ``QUEUE_TIMEOUT_SECONDS`` is told the server is busy rather than left to sit
+    behind an OCR run that has minutes left on it.
+    """
+    try:
+        await asyncio.wait_for(_slots.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("%s rejected: no free job slot after %ss", operation, QUEUE_TIMEOUT_SECONDS)
+        raise HTTPException(status_code=503, detail="server_busy") from None
+    try:
+        yield
+    finally:
+        _slots.release()
+
+
 async def run(
     command: Sequence[str],
     *,
@@ -75,16 +99,8 @@ async def run(
     argv = [str(part) for part in command]
     timeout = timeout_for(operation)
 
-    try:
-        await asyncio.wait_for(_slots.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
-    except TimeoutError:
-        logger.warning("%s rejected: no free job slot after %ss", operation, QUEUE_TIMEOUT_SECONDS)
-        raise HTTPException(status_code=503, detail="server_busy") from None
-
-    try:
+    async with job_slot(operation):
         result = await _spawn(argv, operation=operation, timeout=timeout, cwd=cwd, env=env)
-    finally:
-        _slots.release()
 
     if check and not result.ok:
         logger.error("%s failed (%s): %s", operation, result.returncode, result.output)

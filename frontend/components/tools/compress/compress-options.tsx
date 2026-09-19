@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { formatBytes } from "@/lib/format";
 
-/** Mirrors the backend's Ghostscript presets in `app/services/compress.py`. */
+/** Mirrors the backend's presets in `app/services/compress.py`. */
 export type CompressLevel = "extreme" | "recommended" | "less";
 
 export const DEFAULT_COMPRESS_LEVEL: CompressLevel = "recommended";
@@ -35,7 +35,8 @@ const LEVELS: LevelChoice[] = [
     value: "less",
     label: "Less compression",
     quality: "High quality, less compression",
-    description: "Images stay at 300 dpi, so the document is still print-ready.",
+    description:
+      "Images stay at 300 dpi and nothing else is altered, so the document is still print-ready.",
   },
 ];
 

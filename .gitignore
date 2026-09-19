@@ -44,3 +44,6 @@ coverage/
 
 # Reference screenshots — kept locally, not tracked
 /iLovePDF/
+
+# Sample PDF Documents for testing — kept locally, not tracked
+/PDFKit Samples/

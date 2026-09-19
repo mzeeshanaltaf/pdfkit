@@ -897,3 +897,74 @@ regressions in a deploy far faster than clicking through ten tools.
 - A clean `next build` is worth insisting on: a stale `.next` from an earlier `next dev` run
   left the HMR client and the devtools bundle being served from a *production* server here,
   which cost some time to rule out. `rm -rf .next` before building in CI/Docker.
+
+## Fix: compression did nothing (post-Phase 6)
+
+**Reported:** every compression level returned a file the same size as the upload.
+Reproduced on both PDFs in `PDFKit Samples/` (Folksam insurance terms, 15 MB and 50 MB)
+and on a generated 200 dpi scan. It was not a UI bug — Ghostscript genuinely could not
+shrink any of them, and `compress_one`'s "no gain, return the original" fallback turned
+that into a silent 0%.
+
+Two independent causes, one per kind of document:
+
+1. **Scans.** Ghostscript 9+ defaults to `-dPassThroughJPEGImages=true`, so DCT image data
+   was copied through byte for byte and the output was the input plus overhead. On top of
+   that, `*ImageDownsampleThreshold` defaults to 1.5, so a 200 dpi scan never got
+   downsampled towards a 150 dpi target (200/150 = 1.33). Fixed by turning pass-through
+   off, setting all three thresholds to 1.0, and pinning DCTEncode plus an explicit
+   `QFactor` per tier via `setdistillerparams` — note `.setpdfwrite` was **removed in
+   Ghostscript 10** and `setdistillerparams` is now called bare, and with auto-filtering
+   off the quality comes from `/ColorImageDict`, not `/ColorACSImageDict`.
+
+2. **Vector documents.** Both sample files are "Microsoft: Print To PDF" output: no images,
+   no fonts, no text layer — every glyph is filled bezier paths, and 99.5% of the file is
+   Flate content streams (119 MB decompressed in the 15 MB file). pdfwrite re-interprets
+   that geometry and hands back a file **45% bigger**, so no Ghostscript flag could ever
+   have helped. What does help is that the driver pads every coordinate to six decimal
+   places: `0.750000` is ten bytes for a number that needs four. Stripping the padding is
+   arithmetically lossless and takes ~24% off the file before Flate has even run.
+
+New `app/services/streams.py` does that second job: decode each content stream, shorten the
+numbers, re-deflate at level 9, then a `qpdf --object-streams=generate` pass over the
+structure. `compress.py` now surveys the document (image bytes vs content-stream bytes),
+runs only the strategies its shape justifies, and keeps the smallest result.
+
+Things that took a while to get right, and should not be re-litigated:
+
+- The rewriter edits raw bytes, so it must skip anything that only *looks* like a number:
+  literal strings (which nest parens and escape them), inline image payloads between
+  `ID` and `EI`, names like `/R7.0`, and the mantissa of an exponent. `test_streams.py`
+  pins each of these.
+- Streams are found by a **safelist** traversal (page `/Contents`, Form XObjects, tiling
+  patterns, Type3 `/CharProcs`, annotation `/AP`), never "every stream that is not an
+  image" — ICC profiles and embedded fonts are bare Flate streams too, and rewriting one
+  corrupts the file.
+- `precision` (rounding, as opposed to stripping padding) is worth only ~2% more and is
+  *not* lossless, so `less` does not use it. Measured: lossless-only renders
+  pixel-identical to the original; rounding to 3 dp moves ~0.2% of pixels, all of them
+  antialiasing on glyph edges.
+- The rewrite is pure-Python CPU work (~13s for 15 MB, ~43s for 50 MB), so it runs in a
+  thread and takes a slot from the same `MAX_CONCURRENT_JOBS` semaphore Ghostscript uses —
+  hence `runner.job_slot`, factored out of `runner.run`. It also honours a deadline.
+- The callback-free regex path (three `re.sub` calls with literal replacements) is ~40%
+  faster than one `re.sub` with a Python callback, which matters at ten million numbers
+  per file. Both produce byte-identical output; there is a test asserting the values are
+  unchanged.
+
+Measured after the fix (via the running backend, not the test suite):
+
+| File | less | recommended | extreme |
+|---|---|---|---|
+| Folksam MC (15 MB, vector) | 23.9% | 25.3% | 25.4% |
+| Folksam Hem (50 MB, vector) | 23.7% | 25.1% | — |
+| Generated 200 dpi scan (6.8 MB) | 48.8% | 71.3% | 90.6% |
+
+All three were 0.0% before. iLovePDF gets ~30% on the vector files, so we are in the same
+territory by the same means. An already-lean PDF still reports an honest 0% and gets its
+original bytes back; encrypted input still 422s before any tool runs.
+
+`test_returns_the_original_when_there_is_nothing_to_gain` was asserting the old limitation
+(byte-identical output for the minimal text fixture, which the rewriter now shrinks 14%).
+It is replaced by `test_never_hands_back_a_bigger_file` plus a second-pass test, which pin
+the invariant that actually matters. Suite: 77 passed.
