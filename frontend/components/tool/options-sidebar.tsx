@@ -43,7 +43,13 @@ export function OptionsSidebar({
         {children}
       </div>
 
-      <div className="border-t border-border p-4">
+      {/*
+        On a phone the sidebar is just the bottom of a long page, so the CTA would sit below
+        every option and need a scroll to reach. Sticking it to the viewport keeps it in
+        reach the whole way down; from `lg` the sidebar is its own column and it is already
+        pinned by the flex layout.
+      */}
+      <div className="sticky bottom-0 border-t border-border bg-background p-4 lg:static">
         <Button
           size="lg"
           className="h-14 w-full gap-2 text-base font-semibold"

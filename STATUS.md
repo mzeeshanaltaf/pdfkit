@@ -1,15 +1,14 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 5)
+Last updated: 2026-09-19 (Phase 6)
 
 ## Current phase
 
-**Phase 5 — Wire backend tools into the UI** — ✅ complete. Compress, Protect, Unlock, OCR
-and PDF→JPG's "Extract images" mode are all wired to the Phase 4 endpoints and verified end
-to end against the Dockerised backend. **All 10 tools are now functional — this is
-feature-complete.** The placeholder workspace is gone.
+**Phase 6 — Polish** — ✅ complete. Responsive, metadata, icons, empty and error states,
+cross-tool consistency and accessibility all went through the full verification matrix, and
+the three defects it turned up are fixed. **The app is deploy-ready.**
 
-Next up: **Phase 6 — Polish**. See [`docs/phases/phase-6-*.md`](docs/phases/).
+Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](docs/phases/).
 
 ## Tools live so far
 
@@ -34,7 +33,7 @@ Next up: **Phase 6 — Polish**. See [`docs/phases/phase-6-*.md`](docs/phases/).
 - [x] Phase 3 — Browser tools batch 2 (PDF→JPG page mode, Organize, Page Numbers)
 - [x] Phase 4 — Backend services (Compress, Protect, Unlock, OCR, Extract images) + tests
 - [x] Phase 5 — Wire backend tools into UI — **feature-complete**
-- [ ] Phase 6 — Polish (responsive, metadata, edge cases, a11y)
+- [x] Phase 6 — Polish (responsive, metadata, edge cases, a11y) — **deploy-ready**
 - [ ] Phase 7 — Deploy to Coolify
 
 ## What Phase 1 built
@@ -466,11 +465,22 @@ Then, against `docker compose up backend` (the real runtime image, non-root, tmp
 | File | What it is |
 |---|---|
 | `sample-text.pdf` | 5 pages, real selectable text, 3.7 KB |
-| `sample-scanned.pdf` | 2 pages, image only, zero text items (the OCR fixture) |
+| `sample-scanned.pdf` | 2 pages, a 300 dpi raster of `sample-text.pdf`, zero text items — 274 KB |
 | `sample-protected.pdf` | `sample-text.pdf` encrypted AES-256, password `hunter2` |
 
-`node scripts/make-test-fixtures.mjs` regenerates the first two. The third needs qpdf from
-the backend image; the script prints the command.
+`node scripts/make-test-fixtures.mjs` now regenerates **all three** in one command. It shells
+out to the backend image for the two steps this machine cannot do locally (poppler to
+rasterise, qpdf to encrypt), which is no new requirement — the backend only ever runs in
+Docker anyway.
+
+**Phase 6 replaced `sample-scanned.pdf`.** The old one drew four black bars, described in its
+own generator as "a word-shaped smudge to a person": it had no glyphs, so Tesseract returned
+nothing and the OCR row of the matrix could never have passed. It was also 1.4 KB, so
+Ghostscript returned it unchanged at every level and Compress could not be measured either.
+It is now a real 300 dpi render of the text fixture — genuinely readable to OCR, and with
+enough raster data that the three compression levels separate. 300 dpi specifically, because
+Compress maps its levels to 72 / 150 / 300 dpi and a 150 dpi source leaves the top two
+levels with nothing to downsample.
 
 ## Open questions / risks to watch
 
@@ -702,13 +712,97 @@ the committed fixtures are still the ones phases 2-4 use.
   document ("Page 1 of 5" … "Page 5 of 5" then the two scanned pages), and Split still
   produces its 5-page output.
 
-## Open notes for Phase 6
+## Open notes for Phase 6 (all addressed)
 
-- `503 server_busy` and `504 processing_timed_out` are mapped and take the same
-  recoverable-toast path as the errors above, but were not triggered live — that needs
-  `MAX_CONCURRENT_JOBS` saturated or a deliberately slow job.
+- ~~`503 server_busy` and `504 processing_timed_out` are mapped and take the same
+  recoverable-toast path as the errors above, but were not triggered live.~~ Phase 6 drove
+  both (plus a 500 and a refused connection) by intercepting the request in the browser.
 - Only `eng` is installed in the backend image, so the OCR picker's max-3 cap and its
   language ordering are not exercised by anything but reading the code.
 - Compress, Protect and OCR reject an encrypted input at the backend with
   `422 password_required`, but the client-side encrypted guard means one never reaches them;
   that error therefore has no dedicated UI beyond the generic toast.
+
+## What Phase 6 built
+
+All under `frontend/`.
+
+**Metadata and icons**
+- `lib/constants.ts` — `SITE_URL` (from `NEXT_PUBLIC_SITE_URL`, localhost fallback so
+  `next build` works before a domain exists) and `BRAND_HEX`, the plain-hex form of
+  `--brand` for the two places that cannot read a CSS custom property.
+- `app/layout.tsx` — `metadataBase`, site-wide `openGraph` / `twitter`, and a `viewport`
+  export with a per-theme `themeColor`.
+- `lib/tools.ts` — `toolMetadata` now returns `openGraph` and `twitter` alongside the title,
+  description and canonical, all still read from the registry.
+- `app/icon.svg` (favicon), `app/favicon.ico` (rasterised from it), `app/apple-icon.png`
+  (the same mark, squared off) and `app/opengraph-image.tsx` (a generated 1200×630 card).
+
+**Structure**
+- The `main` landmark moved out of `ToolShell` and into the two route-group layouts, so it
+  wraps every phase of the state machine rather than only the configure screen.
+- `FileDropzone`'s heading is the tool name as an `h1`, matching the sidebar's `h1` in the
+  configure phase — every page now has exactly one, and it says the same thing either way.
+
+**Mobile**
+- The sidebar CTA is `sticky bottom-0` below `lg`, so it stays in reach at the bottom of a
+  long options list instead of sitting under it.
+
+## Defects Phase 6 found and fixed
+
+1. **A 500 from the backend took over the screen.** `recoverableStatus` treated 500 and 502
+   as unrecoverable, so a Ghostscript crash or a proxy error threw the whole workspace away
+   for a full-page failure screen — exactly the case where the file list is still fine and
+   the next step is a retry or a gentler setting. Every answer the server gives is now
+   recoverable; the failure page is reserved for errors raised on this side, where the state
+   really is in doubt.
+2. **Enter on a page-card button also started a keyboard drag.** `PageCard` spread dnd-kit's
+   `attributes` on the `<li>` and named no activator, and dnd-kit's keyboard sensor only
+   skips a keypress when there *is* an activator to compare against — so Space or Enter on
+   "Delete page 3" both deleted the page and began dragging it. `PageCard` now has a grip
+   button carrying `setActivatorNodeRef` + `attributes` (as `FileCard` already did), with
+   the pointer `listeners` left on the `<li>` so dragging anywhere on a card still works.
+   It also removes a button nested inside a `role="button"`.
+3. **`sample-scanned.pdf` could not have passed the OCR or Compress rows.** See the test
+   fixtures section above.
+
+## Phase 6 verification results
+
+Driven headlessly with Playwright against `next build` + the standalone server on :3000
+(the backend's CORS allows :3000 only), with the Dockerised backend up. The harness lives in
+the session scratchpad, not the repo — adding Playwright as a project dependency is a stack
+decision Phase 6 has no mandate for. **Worth considering for Phase 7**, since it catches
+regressions in a deploy far faster than clicking through ten tools.
+
+| Area | Result |
+|---|---|
+| All 11 pages (10 tools + landing) at 390 px and 1440 px | no horizontal scroll, exactly one `h1`, exactly one `main`, zero console errors or warnings |
+| Encrypted guard | banner + `/unlock-pdf` link + disabled CTA on all 9 guarded tools; Unlock accepts the file, shows no banner, marks the card "locked" |
+| Non-PDF rejection | clear toast on all 10 tools |
+| >50 MB rejection | clear toast on the 5 tools that can post; correctly not applied to browser-only tools |
+| Merge | dropped order, sorted A–Z, and drag-reordered all produce the expected page order (checked by which pages carry text, not just page counts) |
+| Split | custom range 2–4 → 3 pages; fixed every 2 → 3 documents; pages `"1,3-5"` merged → 4 pages, page 2 absent |
+| Rotate | right twice → 180° on every page; "Reset all" → 0° and the CTA closes again; per-file rotate turns only that file |
+| Organize | delete + rotate + insert blank across two files → 7 pages with one at 90°; sort restores file order |
+| Page numbers | from page 2 → page 1 skipped, the rest numbered 1–4; "Start at 100" → 100…104; facing mode mirrors the stamp (x=381 odd, x=32 even) |
+| PDF→JPG | normal 840×1190 vs high 1260×1785; extract images → 2 embedded JPEGs |
+| Compress | extreme 64 KB < recommended 210 KB < less 274 KB, all three open |
+| OCR | scan goes from 0 text items to ~820 characters per page |
+| Protect / Unlock | output refuses to open without the password and opens with it; Unlock strips it; a wrong password re-prompts inline instead of failing the run |
+| Backend failures | connection refused, 500, 503 and 504 each show a toast and return to the files — never stuck on "Processing…", never a failure page |
+| Corrupt PDF | flagged on its own card, removable, and the other files still run; a corrupt-only workspace disables the CTA |
+| Accessibility | every grid and panel control tab-reachable, every focus stop paints a ring, Enter on a page action no longer drags, Space on the grip still does |
+| Contrast | zero text nodes below WCAG AA on the landing page and three workspaces, in both light and dark, measured against the real composited background |
+| `npm run lint && npm run build` | clean |
+
+## Open notes for Phase 7
+
+- `NEXT_PUBLIC_SITE_URL` must be set at **build** time in Coolify, not runtime — it is
+  inlined into `metadataBase`, and without it every canonical and OG URL says
+  `http://localhost:3000`.
+- `NEXT_PUBLIC_API_URL` is the same kind of build-time variable, and the backend's
+  `CORS_ORIGINS` has to name the deployed frontend origin or every backend tool fails with
+  the "Could not reach the server" toast.
+- A clean `next build` is worth insisting on: a stale `.next` from an earlier `next dev` run
+  left the HMR client and the devtools bundle being served from a *production* server here,
+  which cost some time to rule out. `rm -rf .next` before building in CI/Docker.

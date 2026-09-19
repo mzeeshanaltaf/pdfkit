@@ -1,12 +1,15 @@
 "use client";
 
 import { AlertTriangle } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api";
-import type { Tool } from "@/lib/tools";
+import { PdfLoadError } from "@/lib/pdf/load";
+import { handOffFiles } from "@/lib/file-handoff";
+import { getTool, toolHref, type Tool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 import { AddFilesButton } from "./add-files-button";
@@ -81,6 +84,8 @@ export function ToolShell({
   const [stage, setStage] = useState("Working on it");
   const [result, setResult] = useState<ToolResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** True when the run failed because a file turned out to be encrypted. See `handleSubmit`. */
+  const [failedOnPassword, setFailedOnPassword] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const { getRootProps, getInputProps, isDragActive, open } = usePdfDropzone({
@@ -127,6 +132,7 @@ export function ToolShell({
     abortRef.current = controller;
 
     setPhase("processing");
+    setFailedOnPassword(false);
     setProgress(null);
     setStage("Working on it");
     setErrorMessage(null);
@@ -154,6 +160,10 @@ export function ToolShell({
         return;
       }
 
+      // A PDF with only an owner password opens in pdf.js, so the file list never flags it
+      // and the banner never appears; pdf-lib refuses it at write time and it lands here
+      // instead. The way out is still Unlock, so the failure screen offers it.
+      setFailedOnPassword(error instanceof PdfLoadError && error.kind === "encrypted");
       setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
       setPhase("error");
     } finally {
@@ -165,6 +175,7 @@ export function ToolShell({
     abortRef.current?.abort();
     setResult(null);
     setErrorMessage(null);
+    setFailedOnPassword(false);
     clearFiles();
     setPhase("idle");
   }, [clearFiles]);
@@ -196,14 +207,30 @@ export function ToolShell({
 
   if (status === "error") {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-4 py-20 text-center">
+      <div
+        role="alert"
+        className="flex flex-1 flex-col items-center justify-center gap-5 px-4 py-20 text-center"
+      >
         <AlertTriangle className="size-9 text-destructive" aria-hidden />
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{tool.name} did not finish</h1>
-          <p className="mt-2 max-w-md text-sm text-muted-foreground">{errorMessage}</p>
+          <p className="mt-2 max-w-md text-sm text-muted-foreground">
+            {errorMessage ?? "Something went wrong."}
+          </p>
         </div>
-        <div className="flex gap-3">
-          <Button onClick={() => setPhase("idle")}>Back to the files</Button>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          {failedOnPassword && !acceptEncrypted ? (
+            <Button asChild>
+              <Link
+                href={toolHref(getTool("unlock"))}
+                onClick={() => handOffFiles(files.map((entry) => entry.file))}
+              >
+                Remove the password first
+              </Link>
+            </Button>
+          ) : (
+            <Button onClick={() => setPhase("idle")}>Back to the files</Button>
+          )}
           <Button variant="ghost" onClick={startOver}>
             Start over
           </Button>
@@ -218,7 +245,8 @@ export function ToolShell({
         <FileDropzone tool={tool} addFiles={addFiles} />
       ) : (
         <div className="flex flex-1 flex-col lg:flex-row">
-          <main
+          {/* The `main` landmark is the route group's layout; this is just the canvas. */}
+          <div
             {...getRootProps({
               className: cn(
                 "relative flex-1 bg-muted/40 px-4 py-6 transition-colors sm:px-6 lg:h-[calc(100dvh-4rem)] lg:overflow-y-auto",
@@ -237,7 +265,8 @@ export function ToolShell({
               {tool.multiple && files.length > 1 && <SortButton onSort={sortFiles} />}
             </div>
 
-            <div className="mx-auto max-w-[1100px] space-y-5 pr-16">
+            {/* The right gutter is the space the floating add-files button sits in. */}
+            <div className="mx-auto max-w-[1100px] space-y-5 pr-14 sm:pr-16">
               {encryptedFiles.length > 0 && !acceptEncrypted && (
                 <EncryptedNotice files={encryptedFiles} />
               )}
@@ -252,7 +281,7 @@ export function ToolShell({
                 />
               )}
             </div>
-          </main>
+          </div>
 
           <OptionsSidebar
             title={tool.name}

@@ -4,7 +4,7 @@ import { SiteFooter } from "@/components/layout/site-footer";
 export default function SiteLayout({ children }: LayoutProps<"/">) {
   return (
     <>
-      <div className="flex flex-1 flex-col">{children}</div>
+      <main className="flex flex-1 flex-col">{children}</main>
       <SiteFooter />
     </>
   );

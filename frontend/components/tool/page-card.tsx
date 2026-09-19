@@ -2,7 +2,7 @@
 
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { FilePlus2, RotateCw, Trash2 } from "lucide-react";
+import { FilePlus2, GripVertical, RotateCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -37,9 +37,15 @@ export function PageCard({
   onInsertAfter,
   sourceIndex,
 }: PageCardProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: page.id,
-  });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: page.id });
 
   const containerRef = useRef<HTMLLIElement>(null);
   const inView = useInView(containerRef);
@@ -75,7 +81,11 @@ export function PageCard({
         "group relative flex cursor-grab flex-col rounded-xl border border-border bg-card p-2 active:cursor-grabbing",
         isDragging && "z-10 opacity-80 shadow-lg",
       )}
-      {...attributes}
+      // Pointer drags start anywhere on the card, which is what makes reordering a long
+      // document bearable. `attributes` deliberately stay on the grip below instead: they
+      // are what marks the drag activator, and dnd-kit's keyboard sensor only starts a drag
+      // when the key lands on that element — without one, Enter on the delete button starts
+      // a drag as well as deleting the page.
       {...listeners}
     >
       {blank ? (
@@ -100,8 +110,24 @@ export function PageCard({
 
       <p className="mt-2 text-center text-xs text-muted-foreground">{position}</p>
 
-      {(onRotate || onDelete || onInsertAfter) && (
-        <div className="absolute inset-x-1.5 top-1.5 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      {/*
+        The grip is the drag activator. It is what dnd-kit's keyboard sensor starts from,
+        and having one is also what stops Enter on the buttons beside it from starting a
+        drag at the same time as firing the button.
+      */}
+      <div className="absolute inset-x-1.5 top-1.5 flex items-start justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <Button
+          ref={setActivatorNodeRef}
+          variant="secondary"
+          size="icon-xs"
+          className="cursor-grab active:cursor-grabbing"
+          aria-label={`Reorder page ${position}`}
+          {...attributes}
+        >
+          <GripVertical aria-hidden />
+        </Button>
+
+        <div className="flex items-center gap-1">
           {onInsertAfter && (
             <Button
               variant="secondary"
@@ -136,7 +162,7 @@ export function PageCard({
             </Button>
           )}
         </div>
-      )}
+      </div>
     </li>
   );
 }

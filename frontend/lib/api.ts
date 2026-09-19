@@ -58,13 +58,6 @@ const MESSAGES: Record<string, string> = {
   ocr_unavailable: "OCR is not available on this server right now.",
 };
 
-/** 5xx means the server broke; everything else means the request can be usefully redone. */
-function recoverableStatus(status: number): boolean {
-  if (status === 0) return true; // network failure, CORS, or the backend is not running
-  if (status < 500) return true;
-  return status === 503 || status === 504;
-}
-
 function cancelled(message: string): ApiError {
   return new ApiError(0, "cancelled", message, { recoverable: true, silent: true });
 }
@@ -75,7 +68,16 @@ function networkError(): ApiError {
   });
 }
 
-/** Turns an error response body into an ApiError, whatever shape it came back in. */
+/**
+ * Turns an error response body into an ApiError, whatever shape it came back in.
+ *
+ * Every one of them is recoverable, a 500 included: whatever broke, it broke over there,
+ * and the file list in the browser is untouched. The next step is usually to retry, or to
+ * change an option — a gentler compression level, a different OCR language — and go again.
+ * Taking over the screen with a failure page would throw the workspace away to report
+ * something it could have survived. The failure page is for errors raised on this side,
+ * where the state really is in doubt.
+ */
 async function errorFromBody(status: number, body: Blob | null): Promise<ApiError> {
   let detail = "";
   try {
@@ -88,17 +90,13 @@ async function errorFromBody(status: number, body: Blob | null): Promise<ApiErro
   }
 
   const known = MESSAGES[detail];
-  if (known) return new ApiError(status, detail, known, { recoverable: recoverableStatus(status) });
+  if (known) return new ApiError(status, detail, known, { recoverable: true });
 
-  // A 500's detail is a sanitised excerpt of tool output — kept on `code` for debugging,
-  // but not something to put in front of someone.
-  const message =
-    status >= 500 || !detail
-      ? "The server could not process this file."
-      : detail;
-  return new ApiError(status, detail || `http_${status}`, message, {
-    recoverable: recoverableStatus(status),
-  });
+  // A 5xx detail is a sanitised excerpt of tool output, and a proxy's error page has no
+  // detail at all. Neither belongs in front of someone, so both get the same sentence and
+  // the real thing stays on `code`.
+  const message = status >= 500 || !detail ? "The server could not process this file." : detail;
+  return new ApiError(status, detail || `http_${status}`, message, { recoverable: true });
 }
 
 function parseHeaders(raw: string): Record<string, string> {

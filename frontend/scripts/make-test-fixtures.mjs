@@ -6,16 +6,34 @@
  *
  *   node scripts/make-test-fixtures.mjs
  *
- * The encrypted fixture needs qpdf, which is not installed locally, so it is produced from
- * the backend image (see the command printed at the end).
+ * Two of the three need tools this machine does not have locally — poppler to turn a page
+ * into a bitmap, qpdf to encrypt — so those steps run inside the backend image. Docker is
+ * a prerequisite for the backend anyway, in dev as well as prod.
  */
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { crc32, deflateSync } from "node:zlib";
+import { spawnSync } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const OUT_DIR = join(process.cwd(), "test-fixtures");
+const REPO_ROOT = resolve(process.cwd(), "..");
+// Docker wants forward slashes, and no shell in between, or a Windows path with a space in
+// it arrives as something else entirely.
+const MOUNT = `${OUT_DIR.split(sep).join("/")}:/fx`;
+
+/** Runs one binary from the backend image against the fixtures directory. */
+function inBackend(entrypoint, args) {
+  const result = spawnSync(
+    "docker",
+    ["compose", "run", "--rm", "--entrypoint", entrypoint, "-v", MOUNT, "backend", ...args],
+    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" },
+  );
+  if (result.error) throw new Error(`could not run docker: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(`${entrypoint} failed (${result.status}): ${result.stderr || result.stdout}`);
+  }
+}
 
 /** A6-ish page, small enough that the fixtures stay a few KB. */
 const WIDTH = 420;
@@ -71,77 +89,46 @@ async function makeTextPdf() {
 }
 
 /**
- * A page whose only content is a bitmap, so it has no extractable text. This is the OCR
- * and "extract images" fixture.
+ * Pages whose only content is a bitmap, so they have no extractable text. This is the OCR
+ * and "extract images" fixture, and the one Compress is measured on.
+ *
+ * The bitmap is a real render of the text fixture rather than drawn shapes: OCR can
+ * only be verified against something that genuinely says words, and Ghostscript can only
+ * show a difference between compression levels on something that genuinely has raster data
+ * to throw away.
  */
 async function makeScannedPdf() {
+  // 300 dpi, not 150: Compress maps its three levels to 72 / 150 / 300 dpi, so a source at
+  // 150 leaves the top two levels with nothing to downsample and all three come back the
+  // same size.
+  inBackend("pdftoppm", ["-r", "300", "-png", "-f", "1", "-l", "2", "/fx/sample-text.pdf", "/fx/.scan"]);
+
   const pdf = await PDFDocument.create();
   pdf.setTitle("PDFKit scanned sample");
 
-  const png = await pdf.embedPng(buildWordPng());
-  for (let index = 0; index < 2; index += 1) {
+  for (const index of [1, 2]) {
+    const source = join(OUT_DIR, `.scan-${index}.png`);
+    const png = await pdf.embedPng(await readFile(source));
     const page = pdf.addPage([WIDTH, HEIGHT]);
-    page.drawImage(png, { x: 40, y: HEIGHT - 220, width: WIDTH - 80, height: 160 });
+    page.drawImage(png, { x: 0, y: 0, width: WIDTH, height: HEIGHT });
+    await rm(source);
   }
 
   await writeFile(join(OUT_DIR, "sample-scanned.pdf"), await pdf.save());
   return "sample-scanned.pdf";
 }
 
-/** Minimal uncompressed-ish PNG writer: enough to embed a legible block of "ink". */
-function buildWordPng() {
-  const width = 240;
-  const height = 80;
-  const pixels = Buffer.alloc(height * (1 + width * 3), 0xff);
-
-  // Row filter byte is 0 for every row; the rest is RGB.
-  for (let y = 0; y < height; y += 1) {
-    const rowStart = y * (1 + width * 3);
-    pixels[rowStart] = 0;
-    for (let x = 0; x < width; x += 1) {
-      // Five thick vertical strokes reading as a word-shaped smudge to a person,
-      // and as an image with no text layer to a PDF parser.
-      const inStroke = y > 18 && y < 62 && Math.floor(x / 12) % 4 === 0 && x > 20 && x < 220;
-      const offset = rowStart + 1 + x * 3;
-      const value = inStroke ? 0x18 : 0xff;
-      pixels[offset] = value;
-      pixels[offset + 1] = value;
-      pixels[offset + 2] = value;
-    }
-  }
-
-  const chunks = [
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", ihdr(width, height)),
-    pngChunk("IDAT", deflateSync(pixels)),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ];
-  return Buffer.concat(chunks);
-}
-
-function ihdr(width, height) {
-  const buffer = Buffer.alloc(13);
-  buffer.writeUInt32BE(width, 0);
-  buffer.writeUInt32BE(height, 4);
-  buffer[8] = 8; // bit depth
-  buffer[9] = 2; // colour type: truecolour
-  return buffer;
-}
-
-function pngChunk(type, data) {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-  const typeAndData = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(typeAndData) >>> 0, 0);
-  return Buffer.concat([length, typeAndData, crc]);
+/** The same document as sample-text.pdf, behind the password "hunter2". */
+function makeProtectedPdf() {
+  inBackend("qpdf", [
+    "--encrypt", "hunter2", "hunter2", "256", "--",
+    "/fx/sample-text.pdf", "/fx/sample-protected.pdf",
+  ]);
+  return "sample-protected.pdf";
 }
 
 await mkdir(OUT_DIR, { recursive: true });
-const written = [await makeTextPdf(), await makeScannedPdf()];
+// Order matters: the other two are made out of the text one.
+const written = [await makeTextPdf(), await makeScannedPdf(), makeProtectedPdf()];
 console.log(`[fixtures] wrote ${written.join(", ")} to test-fixtures/`);
-console.log(
-  "[fixtures] for sample-protected.pdf run qpdf from the backend image:\n" +
-    "  docker compose run --rm --entrypoint qpdf -v \"$PWD/frontend/test-fixtures:/fx\" backend \\\n" +
-    "    --encrypt hunter2 hunter2 256 -- /fx/sample-text.pdf /fx/sample-protected.pdf",
-);
+console.log('[fixtures] sample-protected.pdf opens with the password "hunter2".');

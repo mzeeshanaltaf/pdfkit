@@ -13,6 +13,16 @@ import {
 } from "lucide-react";
 import type { Metadata } from "next";
 
+import { APP_NAME } from "./constants";
+
+/** The route `app/opengraph-image.tsx` is served from. Resolved against `metadataBase`. */
+const OG_IMAGE = {
+  url: "/opengraph-image",
+  width: 1200,
+  height: 630,
+  alt: `${APP_NAME} — every PDF tool on one page`,
+};
+
 export type ToolId =
   | "merge"
   | "split"
@@ -88,7 +98,7 @@ export const TOOLS: Tool[] = [
     icon: LayoutGrid,
     accent: "teal",
     multiple: true,
-    ctaLabel: "Organize",
+    ctaLabel: "Organize PDF",
     runsIn: "browser",
   },
   {
@@ -207,14 +217,39 @@ export function relatedTools(id: ToolId, limit = 3): Tool[] {
   return [...sameAccent, ...rest].slice(0, limit);
 }
 
-/** Per-page metadata, so no tool route hardcodes its own title. */
+/**
+ * Per-page metadata, so no tool route hardcodes its own title.
+ *
+ * The share image has to be named here. Next merges `app/opengraph-image.tsx` into a
+ * route's metadata only while that route leaves `openGraph` alone — setting any of it, as
+ * every tool does for its own title, drops the inherited image with it.
+ */
 export function toolMetadata(id: ToolId): Metadata {
   const tool = getTool(id);
+  const href = toolHref(tool);
+  // The root layout's title template supplies the "| PDFKit" suffix for the tab, but a
+  // share card has no template behind it, so the OG title carries the product name itself.
+  const shareTitle = `${tool.name} | ${APP_NAME}`;
+
   return {
-    // The root layout supplies the "| PDFKit" suffix through its title template.
     title: tool.name,
     description: tool.description,
-    alternates: { canonical: toolHref(tool) },
+    alternates: { canonical: href },
+    openGraph: {
+      type: "website",
+      siteName: APP_NAME,
+      title: shareTitle,
+      description: tool.description,
+      url: href,
+      locale: "en_US",
+      images: [OG_IMAGE],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: shareTitle,
+      description: tool.description,
+      images: [OG_IMAGE],
+    },
   };
 }
 

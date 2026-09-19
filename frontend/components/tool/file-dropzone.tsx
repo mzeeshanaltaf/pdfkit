@@ -36,7 +36,7 @@ export function FileDropzone({ tool, addFiles }: FileDropzoneProps) {
 
       <div
         className={cn(
-          "flex w-full max-w-xl flex-col items-center rounded-xl border-2 border-dashed border-border px-6 py-14 text-center transition-colors",
+          "flex w-full max-w-xl flex-col items-center rounded-xl border-2 border-dashed border-border px-4 py-10 text-center transition-colors sm:px-6 sm:py-14",
           isDragActive && "border-brand bg-brand/5",
         )}
       >
@@ -44,9 +44,11 @@ export function FileDropzone({ tool, addFiles }: FileDropzoneProps) {
           {isDragActive ? <UploadCloud aria-hidden /> : <FilePlus2 aria-hidden />}
         </span>
 
-        <h2 className="mt-5 text-xl font-semibold tracking-tight">
-          {tool.multiple ? "Select PDF files" : "Select a PDF file"}
-        </h2>
+        {/*
+          The page heading, not a restatement of the button below it. In the configure phase
+          the sidebar carries the same `h1`, so a tool page has exactly one either way.
+        */}
+        <h1 className="mt-5 text-xl font-semibold tracking-tight">{tool.name}</h1>
         <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
           {tool.description}
         </p>
