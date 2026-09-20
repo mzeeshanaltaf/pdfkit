@@ -1,0 +1,50 @@
+name: Deploy to Coolify
+
+# Auto-deploys this app to Coolify on every push to main. Used INSTEAD of
+# Coolify's built-in git-push webhook: that webhook is fire-once — a transient
+# 502 (Coolify briefly unreachable while a build is running) silently drops the
+# deploy with no retry. This workflow calls Coolify's deploy API with retries +
+# backoff and turns a red run (with email) when it can't reach Coolify at all.
+
+env:
+  COOLIFY_URL: https://coolify.zeeshanai.cloud
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # allow manual re-trigger from the Actions tab
+
+concurrency:
+  group: deploy-coolify
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # POST is required — Coolify's /deploy route rejects GET with a 405 stub.
+      # 90s per attempt: the VPS can be CPU-saturated under load from other apps,
+      # so the deploy call needs headroom, not just retries.
+      - name: Trigger Coolify deploy (with retries)
+        env:
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+        run: |
+          set -u
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 90 -X POST \
+              "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false" \
+              -H "Authorization: Bearer ${COOLIFY_API_TOKEN}" || echo "000")
+            echo "Attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Deploy queued successfully."
+              exit 0
+            fi
+            if [ "$i" -lt 5 ]; then
+              backoff=$((i * 20)) # 20s, 40s, 60s, 80s
+              echo "Retrying in ${backoff}s..."
+              sleep "$backoff"
+            fi
+          done
+          echo "::error::All 5 attempts to trigger the Coolify deploy failed."
+          exit 1
