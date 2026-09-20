@@ -126,7 +126,9 @@ def test_a_font_subset_that_changes_the_page_is_thrown_away(
     """
     from app.services import compress as service
 
-    def wreck(source, destination, *, deadline=None):
+    # **kwargs so the stand-in absorbs whatever keywords the real subset()
+    # grows — on_step was the last one.
+    def wreck(source, destination, *, deadline=None, **kwargs):
         import io as _io
 
         from fontTools.subset import Options, Subsetter

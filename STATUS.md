@@ -1,13 +1,141 @@
 # Status
 
-Last updated: 2026-09-20 (Phase 7 — deployed to production)
+Last updated: 2026-09-20 (Phase 8 — live progress and API protection, built and locally verified)
 
 ## Current phase
 
-**All 7 phases complete. PDFKit is live** at
+**Phases 0-7 complete; PDFKit is live** at
 [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
 `api.pdfkit.zeeshanai.cloud`. See the root [`README.md`](README.md) for deploy notes
 (domains, redeploy process, log locations).
+
+**Phase 8 is code-complete and verified locally, and has not been deployed.** The
+remaining work is the deploy itself and the four checks that can only be done against
+production — see "Left to do" at the end of the Phase 8 section.
+
+## Phase 8 — Live progress + API protection (2026-09-20)
+
+Two production problems, both in the backend path: the progress bar went blind the
+moment the upload finished (an indeterminate pulse for the whole server-side job, with no
+notion of "file 2 of 5" anywhere in the system), and the API was completely open to
+anything that was not a browser.
+
+### What is now true
+
+**Live progress, end to end.** The client generates a job id, opens
+`GET /progress/{id}` (SSE), then posts with `X-Job-Id`. All seven backend tools report
+file-level progress, and five of them report intra-file percentages:
+
+| Tool | Where the numbers come from |
+|---|---|
+| Compress | Ghostscript's `Page N` lines (`-dQUIET` removed) plus a fixed weighted cursor over survey / fonts / verify / rewrite / ghostscript |
+| OCR | An OCRmyPDF `--plugin` (`app/tools/ocr_progress.py`) emitting JSON on stderr |
+| PDF→Word | `pdf2docx_cli` counting `Page.parse` and `Page.make_docx`, weighted 0.8 / 0.2 |
+| PDF→Markdown | `anydoc_cli` counting files through the batch |
+| Protect / Unlock / extract-images | File-level only — they are milliseconds-scale per file |
+
+**Cancel works, on both sides.** `ToolShell.handleCancel` aborts and resets the phase
+itself, and the service loops call `progress.stop_if_cancelled()` between files, so an
+abandoned batch stops on the server too rather than running to completion for nobody.
+
+**The API is a cost gate.** Every processing endpoint needs a short-lived HMAC bearer
+token minted by the frontend's `/api/token`, and is rate-limited per IP. `/health` and
+`GET /ocr/languages` are open. It stops scripted third-party use; it does not stop a token
+copied out of devtools, and nothing short of accounts would — that sentence is in
+`app/services/auth.py` so nobody later mistakes it for authentication.
+
+### Decisions worth remembering
+
+- **The batched POST stayed.** Splitting into one request per file would have given
+  file-level progress for free, but it would have broken the batched anydoc call
+  PDF→Markdown depends on, lost server-side zipping and Compress's size-header
+  aggregation, and multiplied the request count. File-level events come off the progress
+  registry at near-zero extra cost instead.
+- **`fetch` + `ReadableStream`, not `EventSource`.** `EventSource` cannot send an
+  `Authorization` header, so this is the only reason `/progress` can be authenticated at
+  all. It also shares the run's `AbortController` and has no auto-reconnect to suppress.
+- **Latest-value snapshot, not a queue** (`app/services/progress.py`). Progress is state,
+  not a log: overwrite-and-`set()` coalesces for free and cannot back-pressure a
+  subprocess read pump.
+- **The publisher travels by `ContextVar`**, bound by the `job_publisher` dependency —
+  seven endpoint signatures would still not have reached `runner.run()`. `test_progress.py`
+  asserts it survives dependency → endpoint → service → `to_thread`.
+- **Progress can never fail a request.** Every path degrades to a no-op publisher, and the
+  frontend bridge never rejects: the run's promise is the upload alone.
+- **The bar is batch-wide and monotonic.** A per-file percentage that snapped back to zero
+  four times in a five-file run reads worse than one that climbs; Compress's cursor
+  fast-forwards over skipped steps rather than re-normalising, because re-normalising makes
+  it jump *backwards*, which reads as broken.
+
+### Three things that turned out differently than expected
+
+1. **Dropping OCRmyPDF's `--quiet` does nothing.** `ocrmypdf/__main__.py` disables the
+   progress bar whenever stderr is not a TTY, which under a pipe is always. There is no
+   flag combination that works; the `--plugin` + `get_progressbar_class` hook is the
+   supported route, and the plugin deliberately ignores the `disable=True` OCRmyPDF passes
+   it. `--quiet` **stays**.
+2. **Cancellation had to be bound unconditionally.** First cut attached the
+   `is_disconnected` probe only when a valid `X-Job-Id` claimed a channel, which quietly
+   made teardown a feature of progress rather than of cancellation. It is now bound even
+   with the null publisher.
+3. **The runner's pending-line buffer needed splitting, not flushing.** Appending a whole
+   64 KiB read chunk before checking the cap let the buffer reach 128 KiB; it now emits in
+   exact `MAX_PENDING_LINE` pieces. Caught by `test_runner_streaming.py`.
+
+### The constraint to remember
+
+`runner._slots`, `ratelimit._windows` and `progress.registry` are all **per-process**, and
+correct only because `backend/Dockerfile` runs uvicorn with `--workers 1`. Two workers
+would silently double every ceiling. The job semaphore already depended on this before
+Phase 8; two more things depend on it now.
+
+`FORWARDED_ALLOW_IPS` is the other one to remember: uvicorn's default trusts only
+`127.0.0.1`, Traefik connects from a Docker bridge address, so without it
+`request.client.host` is *Traefik* for every visitor and the whole site shares one
+rate-limit bucket. `/health` echoes the observed client address specifically so this is
+one curl away from being obvious.
+
+### Tests
+
+**166 passed, 0 skipped** in `docker compose --profile test run --rm backend-tests` (was
+107). New files: `test_runner_streaming.py`, `test_progress.py`, `test_auth.py`,
+`test_rate_limit.py`, `test_gs_progress.py`, `test_ocr_plugin.py`, `test_shims.py`.
+
+Two existing things needed changing, both anticipated: `conftest.py`'s session `client`
+fixture now mints a long-TTL token so all 166 tests exercise the real auth path, with an
+autouse fixture resetting the rate limiter between them (otherwise the suite limits
+itself around test 20); and `test_compress.py`'s `fonts.subset` stand-in needed `**kwargs`
+to absorb the new `on_step`. A `requires_ocrmypdf` marker was also added — three OCR tests
+were failing rather than skipping on a machine that has Tesseract but no `ocrmypdf` on
+PATH.
+
+### Verified locally against `docker compose up`
+
+`/health` reports `auth`/`jobs`/`streams`/`client`; no token → `401 auth_required`;
+`POST /api/token` mints; a three-file OCR streams `hello` → state frames climbing through
+files 1-3 → `end{done}` while the POST still returns its zip; Compress on a scan
+fast-forwards to the Ghostscript step and ticks per page; PDF→Word reports OCR then
+rebuild; the other four tools report file-level progress; 25 POSTs in a minute → `429`
+with `Retry-After`; a third concurrent OCR shows `queued` then `running`; the per-IP
+stream cap holds at 4 and a 429 there does not touch processing; an aborted batch logs
+"client disconnected; abandoning the rest of the batch" and stops early.
+`npm run lint`, `npx tsc --noEmit` and `npm run build` are all clean.
+
+### Left to do
+
+1. **Deploy.** Set `API_TOKEN_SECRET` (one `openssl rand -hex 32`, the *same* value on
+   both services) and `FORWARDED_ALLOW_IPS` in Coolify, then push. Nothing new is a build
+   arg, so rotating the secret later needs no frontend rebuild.
+2. **Browser pass** on all seven backend tools with three files each — the file counter,
+   the climbing bar, Cancel mid-OCR returning to an intact file list, and `/progress`
+   blocked in devtools falling back to today's indeterminate bar. The server side of each
+   of these is verified; what is not yet verified is how they look.
+3. **Confirm the client IP in production**: hit `/health` from a phone tether and from the
+   VPS and check they report **two different** addresses. If they match,
+   `FORWARDED_ALLOW_IPS` has not taken and every visitor is sharing one bucket — check this
+   before trusting the limits.
+4. **Leave a progress stream open for ten minutes** against the public domain and confirm
+   the 15-second keep-alives hold it through Traefik without a 502.
 
 ## Phase 7 — Deploy to Coolify (2026-09-20)
 

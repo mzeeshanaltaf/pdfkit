@@ -9,9 +9,15 @@ from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 from app.services.ocr import _parse_langs
-from tests.conftest import has_scalable_font, requires_tesseract, upload, zip_names
+from tests.conftest import (
+    has_scalable_font,
+    requires_ocrmypdf,
+    requires_tesseract,
+    upload,
+    zip_names,
+)
 
-pytestmark = requires_tesseract
+pytestmark = [requires_tesseract, requires_ocrmypdf]
 
 
 def text_of(payload: bytes) -> str:

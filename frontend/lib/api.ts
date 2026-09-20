@@ -60,6 +60,13 @@ const MESSAGES: Record<string, string> = {
     "This PDF is a scan, so there is no text to convert. Turn OCR on and try again.",
   document_unreadable: "This PDF could not be read well enough to convert.",
   document_too_complex: "This PDF is too large or complex to convert.",
+  // The API is behind a short-lived token minted by this site. All four of these mean
+  // "ask for a new one and go again", which `withFreshToken` does once on its own —
+  // reaching a user means that retry failed too, which is a misconfiguration.
+  auth_required: "This page needs a refresh before it can talk to the server.",
+  auth_expired: "That took long enough for the session to lapse. Try again.",
+  auth_invalid: "This page needs a refresh before it can talk to the server.",
+  rate_limited: "Too many files in a short time. Wait a minute and try again.",
 };
 
 function cancelled(message: string): ApiError {
@@ -144,11 +151,17 @@ export interface ApiFileResponse {
 }
 
 export interface UploadOptions {
-  /** 0-100 for the upload itself. The server's own work has no honest percentage. */
+  /** 0-100 for the upload itself. The server's own work is reported over `/progress`. */
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
   /** Used only if the response somehow arrives without a Content-Disposition. */
   fallbackName?: string;
+  /**
+   * Extra request headers: the bearer token, and the `X-Job-Id` that ties this upload to
+   * a progress stream. Sending either makes this a non-simple cross-origin request, so it
+   * now costs one preflight — cached for the browser's default 600 s.
+   */
+  headers?: Record<string, string>;
 }
 
 /** The 50 MB cap, checked before a byte goes on the wire. Mirrors the server's own limit. */
@@ -171,7 +184,7 @@ export function uploadAndProcess(
   endpoint: string,
   files: File[],
   fields: Record<string, string> = {},
-  { onProgress, signal, fallbackName = "download" }: UploadOptions = {},
+  { onProgress, signal, fallbackName = "download", headers = {} }: UploadOptions = {},
 ): Promise<ApiFileResponse> {
   assertUploadable(files);
 
@@ -188,6 +201,7 @@ export function uploadAndProcess(
     const request = new XMLHttpRequest();
     request.open("POST", apiUrl(endpoint));
     request.responseType = "blob";
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
 
     const abort = () => request.abort();
     signal?.addEventListener("abort", abort, { once: true });
@@ -282,6 +296,72 @@ export async function uploadWithPassword(
       password = supplied;
     }
   }
+}
+
+export interface EventFrame {
+  /** The SSE `event:` name — `hello`, `state` or `end`. */
+  event: string;
+  /** The `data:` line, still JSON text. */
+  data: string;
+}
+
+/**
+ * Reads a server-sent event stream with `fetch`, not `EventSource`.
+ *
+ * Three reasons, and the first is the one that decided it: `EventSource` cannot send an
+ * `Authorization` header, so the progress route could not be authenticated at all. It also
+ * shares the run's existing `AbortController`, and it has no automatic reconnection to
+ * suppress — a progress stream that silently reopens after the job is gone is not a
+ * feature.
+ */
+export async function* eventStream(
+  path: string,
+  { headers = {}, signal }: { headers?: Record<string, string>; signal?: AbortSignal } = {},
+): AsyncGenerator<EventFrame> {
+  const response = await fetch(apiUrl(path), { headers, signal, cache: "no-store" });
+  if (!response.ok || !response.body) {
+    throw await errorFromBody(response.status, response.body ? await response.blob() : null);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      // A frame is everything up to a blank line. Anything still in the buffer is a
+      // partial frame and waits for the next chunk.
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const frame = parseEventFrame(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        if (frame) yield frame;
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    // Tells the server we have gone, which is what lets it drop the stream slot.
+    void reader.cancel().catch(() => {});
+  }
+}
+
+function parseEventFrame(raw: string): EventFrame | null {
+  let event = "message";
+  const data: string[] = [];
+
+  for (const line of raw.split("\n")) {
+    // `: keep-alive` — a comment, and the thing holding the connection open through
+    // Traefik. Not a frame, and no parser should treat it as one.
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+  }
+
+  return data.length > 0 ? { event, data: data.join("\n") } : null;
 }
 
 /** Plain GET for the small JSON endpoints, e.g. the OCR language list. */

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
 type Fields = {
   name: string;
@@ -42,12 +42,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const MAX_MESSAGE_LENGTH = 5000;
 
-function clientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
-  return req.headers.get("x-real-ip") ?? "anonymous";
-}
-
 export async function POST(req: NextRequest) {
   // The no-JS fallback posts url-encoded and expects a redirect; the hydrated fetch path
   // sends JSON and expects JSON back. Both are supported on purpose — see the contact form.
@@ -87,7 +81,10 @@ export async function POST(req: NextRequest) {
     return fail("length", 400, `Message must be ${MAX_MESSAGE_LENGTH} characters or fewer.`);
   }
 
-  const { success: underLimit } = await checkRateLimit(clientIp(req));
+  // Shared with /api/token, and rightmost-untrusted: the leftmost X-Forwarded-For
+  // entry is whatever the client sent, so keying on it let anyone mint unlimited
+  // identities and walk past this limiter entirely.
+  const { success: underLimit } = await checkRateLimit(clientIp(req.headers));
   if (!underLimit) {
     return fail("rate", 429, "Too many messages from this address. Please try again later.");
   }

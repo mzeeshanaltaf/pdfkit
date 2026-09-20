@@ -55,3 +55,59 @@ def _parse_origins(raw: str) -> list[str]:
 CORS_ORIGINS = _parse_origins(
     os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 )
+
+# --- live progress -----------------------------------------------------------
+#
+# How many jobs the progress registry will track at once. A hard cap, because a
+# registry is the one thing in this service that outlives a request: past it,
+# new jobs simply run without progress rather than being refused.
+MAX_TRACKED_JOBS = int(os.getenv("MAX_TRACKED_JOBS", "256"))
+
+# A channel opened by a subscriber whose POST never arrives, and a channel whose
+# job has finished, are both kept this long — the first so a slow upload still
+# finds its stream, the second so a job that beat its subscriber reports "done"
+# instead of hanging.
+PROGRESS_PENDING_TTL_SECONDS = int(os.getenv("PROGRESS_PENDING_TTL_SECONDS", "30"))
+PROGRESS_TERMINAL_TTL_SECONDS = int(os.getenv("PROGRESS_TERMINAL_TTL_SECONDS", "30"))
+
+# An SSE comment on this interval keeps Traefik from closing an idle stream.
+PROGRESS_KEEPALIVE_SECONDS = int(os.getenv("PROGRESS_KEEPALIVE_SECONDS", "15"))
+
+MAX_STREAMS = int(os.getenv("MAX_STREAMS", "64"))
+MAX_STREAMS_PER_IP = int(os.getenv("MAX_STREAMS_PER_IP", "4"))
+
+# --- API protection ----------------------------------------------------------
+#
+# Shared with the Next server, which mints the tokens this service verifies.
+# Unset means unauthenticated: the service still runs (and says so loudly at
+# startup and on /health) rather than failing closed on a missing deploy var.
+API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
+# Verify-only, so the secret can be rotated without a window where live tokens
+# minted a second ago stop working.
+API_TOKEN_SECRET_PREVIOUS = os.getenv("API_TOKEN_SECRET_PREVIOUS", "")
+API_TOKEN_TTL_SECONDS = int(os.getenv("API_TOKEN_TTL_SECONDS", "120"))
+API_TOKEN_SKEW_SECONDS = int(os.getenv("API_TOKEN_SKEW_SECONDS", "60"))
+API_TOKEN_AUDIENCE = os.getenv("API_TOKEN_AUDIENCE", "pdfkit-api")
+
+# Per-IP sliding windows, as (requests, seconds). A real user running five-file
+# batches makes one to three requests a minute.
+RATE_LIMIT_COARSE = (
+    int(os.getenv("RATE_LIMIT_COARSE_REQUESTS", "240")),
+    int(os.getenv("RATE_LIMIT_COARSE_SECONDS", "60")),
+)
+RATE_LIMIT_JOB_BURST = (
+    int(os.getenv("RATE_LIMIT_JOB_BURST_REQUESTS", "20")),
+    int(os.getenv("RATE_LIMIT_JOB_BURST_SECONDS", "60")),
+)
+RATE_LIMIT_JOB_HOURLY = (
+    int(os.getenv("RATE_LIMIT_JOB_HOURLY_REQUESTS", "120")),
+    int(os.getenv("RATE_LIMIT_JOB_HOURLY_SECONDS", "3600")),
+)
+RATE_LIMIT_PROGRESS = (
+    int(os.getenv("RATE_LIMIT_PROGRESS_REQUESTS", "60")),
+    int(os.getenv("RATE_LIMIT_PROGRESS_SECONDS", "60")),
+)
+
+# How many client addresses the limiter remembers. LRU-evicted, so the worst a
+# flood of unique addresses can do is forget the oldest legitimate one.
+RATE_LIMIT_MAX_CLIENTS = int(os.getenv("RATE_LIMIT_MAX_CLIENTS", "4096"))

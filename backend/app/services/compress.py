@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from pypdf import PdfReader
 
 from app.config import timeout_for
 from app.deps import SavedUpload, UploadBatch
-from app.services import fonts, streams
+from app.services import fonts, progress, streams
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import job_slot, run
@@ -96,6 +97,112 @@ class CompressionResult:
     result_size: int
 
 
+# How much of one file's progress each step is worth, in order. A *fixed*
+# cursor over the biggest plan a file could get, decided before we know which
+# steps will actually run - because `wants_rewrite` and `wants_ghostscript` are
+# only known after the font pass, and re-normalising then would make the bar
+# jump backwards. A forward jump reads as "that step was quick"; a backward one
+# reads as broken.
+#
+# Two of these are genuinely smooth and they are the two that dominate: rewrite
+# on a vector document, ghostscript on a scan. Survey and verify are single
+# lumps, and fonts is lumpy for the reason documented in `fonts.subset`.
+STEP_WEIGHTS: tuple[tuple[str, str, int], ...] = (
+    ("survey", "Looking at the document", 5),
+    ("fonts", "Subsetting the fonts", 20),
+    ("verify", "Checking nothing moved", 15),
+    ("rewrite", "Rewriting the drawing", 25),
+    ("ghostscript", "Recompressing the images", 35),
+)
+
+# Below this gap a publish is skipped. A twenty-file request can spawn four
+# hundred subprocesses and tick a content-stream loop tens of thousands of
+# times; the throttle is what keeps that from becoming the workload.
+MIN_PUBLISH_INTERVAL = 0.25
+MIN_PUBLISH_DELTA = 1.0
+
+
+class _Cursor:
+    """Where one file is, as a 0-100 number, across a plan of skippable steps."""
+
+    def __init__(self, publisher: progress.Publisher) -> None:
+        self._publisher = publisher
+        self._base = 0.0
+        self._span = 0.0
+        self._offsets: dict[str, float] = {}
+        running = 0.0
+        for name, _label, weight in STEP_WEIGHTS:
+            self._offsets[name] = running
+            running += weight
+
+    def start(self, name: str) -> None:
+        """Enter a step, fast-forwarding over any that were skipped."""
+        label, weight = next(
+            (text, weight) for key, text, weight in STEP_WEIGHTS if key == name
+        )
+        self._base = self._offsets[name]
+        self._span = float(weight)
+        self._publisher.step(label, self._base)
+
+    def at(self, fraction: float) -> None:
+        """Position inside the current step, as 0-1 of it."""
+        self._publisher.percent(self._base + self._span * max(0.0, min(1.0, fraction)))
+
+    def done(self) -> None:
+        self._base += self._span
+        self._span = 0.0
+        self._publisher.percent(self._base)
+
+
+def _threaded_reporter(cursor: _Cursor) -> Callable[[int, int], None]:
+    """An ``on_step`` for work running on an ``asyncio.to_thread`` worker.
+
+    The callback fires on that worker, which must not touch the loop - hence
+    ``call_soon_threadsafe`` onto the loop captured here, while we are still on
+    it.
+    """
+    loop = asyncio.get_running_loop()
+    last = [0.0, -1.0]  # when we last published, and at what percent
+
+    def on_step(done: int, total: int) -> None:
+        if total <= 0:
+            return
+        percent = done / total * 100
+        now = time.monotonic()
+        if (
+            done < total
+            and now - last[0] < MIN_PUBLISH_INTERVAL
+            and percent - last[1] < MIN_PUBLISH_DELTA
+        ):
+            return
+        last[0], last[1] = now, percent
+        loop.call_soon_threadsafe(cursor.at, percent / 100)
+
+    return on_step
+
+
+# Ghostscript announces the page count once and then names each page as it
+# finishes. Both go to stdout, which is free because the PDF goes to
+# -sOutputFile=. This is the whole reason -dQUIET is gone from the command line.
+_GS_TOTAL = re.compile(r"^Processing pages \d+ through (\d+)\.")
+_GS_PAGE = re.compile(r"^Page (\d+)")
+
+
+def _ghostscript_reporter(cursor: _Cursor) -> Callable[[str, str], None]:
+    total = [0]
+
+    def on_line(stream: str, line: str) -> None:
+        if stream != "stdout":
+            return
+        text = line.strip()
+        if match := _GS_TOTAL.match(text):
+            total[0] = int(match.group(1))
+        elif (match := _GS_PAGE.match(text)) and total[0] > 0:
+            cursor.at(int(match.group(1)) / total[0])
+
+    return on_line
+
+
 def validate_level(level: str | None) -> str:
     chosen = (level or DEFAULT_LEVEL).strip().lower()
     if chosen not in PRESETS:
@@ -114,7 +221,10 @@ def _ghostscript(source: Path, destination: Path, preset: Preset) -> list[str]:
         f"-dPDFSETTINGS={preset.pdf_settings}",
         "-dNOPAUSE",
         "-dBATCH",
-        "-dQUIET",
+        # No -dQUIET: its per-page "Page N" lines on stdout are the only honest
+        # progress signal on a scan, which is the document class this route
+        # exists for. tests/test_gs_progress.py is there so a future tidy-up
+        # cannot put the flag back without a failing test.
         "-dSAFER",
         # THE flag on this command line. Ghostscript 9.x and later copy DCT
         # (JPEG) image data through verbatim by default, which on a scanned
@@ -180,11 +290,14 @@ def _qfactor(quality: int) -> float:
     return round(max(0.05, min(4.0, (100 - quality) / 40)), 2)
 
 
-async def _run_ghostscript(source: Path, destination: Path, preset: Preset) -> bool:
+async def _run_ghostscript(
+    source: Path, destination: Path, preset: Preset, cursor: _Cursor | None = None
+) -> bool:
     result = await run(
         _ghostscript(source, destination, preset),
         operation="compress",
         check=False,
+        on_line=_ghostscript_reporter(cursor) if cursor is not None else None,
     )
     if result.ok and destination.exists() and destination.stat().st_size > 0:
         return True
@@ -210,7 +323,9 @@ async def _parses_cleanly(source: Path) -> bool:
     return result.ok and "Syntax Error" not in result.output
 
 
-async def _run_rewrite(source: Path, destination: Path, preset: Preset) -> bool:
+async def _run_rewrite(
+    source: Path, destination: Path, preset: Preset, cursor: _Cursor | None = None
+) -> bool:
     """Shorten every content stream, then let qpdf tighten the file structure."""
     async with job_slot("compress"):
         # Started after the slot is in hand, so time spent queueing does not come
@@ -222,6 +337,7 @@ async def _run_rewrite(source: Path, destination: Path, preset: Preset) -> bool:
             destination,
             precision=preset.precision,
             deadline=deadline,
+            on_step=_threaded_reporter(cursor) if cursor is not None else None,
         )
     if not rebuilt:
         return False
@@ -339,25 +455,40 @@ async def _renders_the_same(before: Path, after: Path, workspace: Path) -> bool:
     return same
 
 
-async def _run_font_subset(source: Path, destination: Path, workspace: Path) -> bool:
+async def _run_font_subset(
+    source: Path, destination: Path, workspace: Path, cursor: _Cursor | None = None
+) -> bool:
     async with job_slot("compress"):
         deadline = time.monotonic() + timeout_for("compress")
-        subsetted = await asyncio.to_thread(fonts.subset, source, destination, deadline=deadline)
+        subsetted = await asyncio.to_thread(
+            fonts.subset,
+            source,
+            destination,
+            deadline=deadline,
+            on_step=_threaded_reporter(cursor) if cursor is not None else None,
+        )
     if not subsetted:
         return False
+    if cursor is not None:
+        cursor.done()
+        cursor.start("verify")
     if await _renders_the_same(source, destination, workspace):
         return True
     destination.unlink(missing_ok=True)
     return False
 
 
-async def compress_one(upload: SavedUpload, workspace: Path, level: str) -> OutputFile:
+async def compress_one(
+    upload: SavedUpload, workspace: Path, level: str, cursor: _Cursor | None = None
+) -> OutputFile:
     """Compress one file, returning the original when nothing beat it."""
     ensure_readable(upload.path)
     preset = PRESETS[level]
     stem = upload.path.stem
     destination = workspace / f"{stem}-compressed.pdf"
 
+    if cursor is not None:
+        cursor.start("survey")
     measured = await asyncio.to_thread(streams.survey, upload.path)
     candidates: list[Path] = []
 
@@ -366,7 +497,9 @@ async def compress_one(upload: SavedUpload, workspace: Path, level: str) -> Outp
     working = upload.path
     if measured is None or measured.font_share >= FONT_SHARE_FLOOR:
         trimmed = workspace / f"{stem}-fonts.pdf"
-        if await _run_font_subset(upload.path, trimmed, workspace):
+        if cursor is not None:
+            cursor.start("fonts")
+        if await _run_font_subset(upload.path, trimmed, workspace, cursor):
             working = trimmed
             candidates.append(trimmed)
             measured = await asyncio.to_thread(streams.survey, trimmed)
@@ -381,12 +514,16 @@ async def compress_one(upload: SavedUpload, workspace: Path, level: str) -> Outp
 
     if wants_rewrite:
         rewritten = workspace / f"{stem}-rewritten.pdf"
-        if await _run_rewrite(working, rewritten, preset):
+        if cursor is not None:
+            cursor.start("rewrite")
+        if await _run_rewrite(working, rewritten, preset, cursor):
             candidates.append(rewritten)
 
     if wants_ghostscript:
         distilled = workspace / f"{stem}-gs.pdf"
-        if await _run_ghostscript(working, distilled, preset):
+        if cursor is not None:
+            cursor.start("ghostscript")
+        if await _run_ghostscript(working, distilled, preset, cursor):
             candidates.append(distilled)
 
     if not candidates:
@@ -416,7 +553,15 @@ async def compress_one(upload: SavedUpload, workspace: Path, level: str) -> Outp
 
 async def compress(batch: UploadBatch, level: str) -> CompressionResult:
     workspace = batch.workspace("out")
-    outputs = [await compress_one(upload, workspace, level) for upload in batch.files]
+    publisher = progress.current()
+
+    outputs: list[OutputFile] = []
+    for index, upload in enumerate(batch.files, start=1):
+        await progress.stop_if_cancelled()
+        publisher.file(index, len(batch.files), upload.original_name)
+        outputs.append(
+            await compress_one(upload, workspace, level, _Cursor(publisher))
+        )
     return CompressionResult(
         outputs=outputs,
         original_size=sum(upload.size for upload in batch.files),

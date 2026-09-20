@@ -11,6 +11,7 @@ from PIL import Image
 
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
+from app.services import progress
 from app.services.responses import OutputFile, build_archive, sanitise_archive_name
 from app.services.runner import run, sanitise
 
@@ -108,8 +109,13 @@ async def extract_images(batch: UploadBatch, quality: str) -> OutputFile:
     raw_dir = batch.workspace("raw")
     level = QUALITIES[quality]
 
+    publisher = progress.current()
     jpegs: list[Path] = []
-    for upload in batch.files:
+    for index, upload in enumerate(batch.files, start=1):
+        await progress.stop_if_cancelled()
+        publisher.file(
+            index, len(batch.files), upload.original_name, "Looking for images"
+        )
         jpegs += await extract_one(upload, raw_dir, workspace, level)
 
     if not jpegs:

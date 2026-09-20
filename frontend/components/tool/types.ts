@@ -51,6 +51,14 @@ export interface ToolRunContext {
   /** 0-100 while uploading, or null for an indeterminate "Processing" state. */
   setProgress: (progress: number | null) => void;
   setStage: (stage: string) => void;
+  /**
+   * The quieter second line under the stage: which file of how many, and its name.
+   *
+   * Deliberately a third setter rather than a single `report(patch)` object, tidier as
+   * that would be greenfield: keeping `setProgress` and `setStage` as they are means the
+   * six browser-side tools need no edit at all, and none of them ever calls this.
+   */
+  setDetail: (detail: string | null) => void;
   signal: AbortSignal;
 }
 

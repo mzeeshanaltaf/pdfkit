@@ -33,6 +33,7 @@ from pypdf import PdfReader, PdfWriter
 
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable
+from app.services import progress
 from app.services.ocr import ocr_to_path
 from app.services.responses import MARKDOWN_MEDIA_TYPE, OutputFile, convert_name
 from app.services.runner import ToolResult, run, sanitise
@@ -53,6 +54,38 @@ UNREADABLE_PAGE = "_Page {number} could not be read._"
 # in /app, pytest on a developer machine does not.
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
+#: Duplicated from ``app.tools.anydoc_cli`` rather than imported, so the API
+#: process never loads anydoc's native module. ``tests/test_shims.py`` keeps
+#: the two equal.
+MARKER = "pdfkit_progress"
+
+# Three steps, and which slice of one file's bar each owns. The first anydoc
+# pass converts the whole document and usually *is* the whole job; the other
+# two only happen when it comes back needing OCR, which is the scanned case.
+_FIRST_PASS = (0.0, 25.0)
+_OCR_SLICE = (25.0, 45.0)
+_ASSEMBLE_SLICE = (70.0, 30.0)
+
+
+def _progress_reader(publisher: progress.Publisher, scale: tuple[float, float]):
+    """Turn the shim's stderr lines into positions on this file's bar."""
+    base, span = scale
+
+    def on_line(stream: str, line: str) -> None:
+        if stream != "stderr" or MARKER not in line:
+            return
+        try:
+            payload = json.loads(line)
+            total = float(payload["total"] or 0)
+            done = float(payload["done"])
+        except (ValueError, KeyError, TypeError):
+            return
+        if total <= 0:
+            return
+        publisher.percent(base + span * min(1.0, done / total))
+
+    return on_line
+
 
 def _parse(result: ToolResult) -> list[dict]:
     """The shim's per-file JSON status lines."""
@@ -65,12 +98,18 @@ def _parse(result: ToolResult) -> list[dict]:
             payload = json.loads(line)
         except ValueError:
             continue
-        if isinstance(payload, dict):
+        # Only status lines. The shim puts progress on stderr precisely so it
+        # cannot land here, but `to_markdown_one` indexes lines[0] positionally
+        # and a stray object would silently become file zero's verdict — so
+        # this is the second lock on the same door.
+        if isinstance(payload, dict) and "status" in payload:
             parsed.append(payload)
     return parsed
 
 
-async def _run_anydoc(out_dir: Path, sources: list[Path]) -> list[dict]:
+async def _run_anydoc(
+    out_dir: Path, sources: list[Path], scale: tuple[float, float] = _FIRST_PASS
+) -> list[dict]:
     """Convert a batch of files in one subprocess, returning their status lines."""
     result = await run(
         # sys.executable, not "python": the venv interpreter is the one anydoc
@@ -79,6 +118,7 @@ async def _run_anydoc(out_dir: Path, sources: list[Path]) -> list[dict]:
         operation="markdown",
         check=False,
         cwd=_PACKAGE_ROOT,
+        on_line=_progress_reader(progress.current(), scale),
     )
     if not result.ok:
         logger.error("anydoc could not run (%s): %s", result.returncode, result.output)
@@ -153,7 +193,7 @@ async def _assemble(
     if convertible:
         split = await asyncio.to_thread(_split_pages, source, pages_dir, convertible)
         by_name = {path.name: number for number, path in split.items()}
-        for line in await _run_anydoc(out_dir, list(split.values())):
+        for line in await _run_anydoc(out_dir, list(split.values()), _ASSEMBLE_SLICE):
             number = by_name.get(str(line.get("input")))
             if number is None or line.get("status") != "ok":
                 continue
@@ -215,7 +255,9 @@ async def to_markdown_one(
 
     work = scratch / upload.path.stem
     work.mkdir(parents=True, exist_ok=True)
-    ocred = await ocr_to_path(upload.path, work / "ocr.pdf", scratch, languages)
+    ocred = await ocr_to_path(
+        upload.path, work / "ocr.pdf", scratch, languages, _OCR_SLICE
+    )
 
     destination.write_text(
         await _assemble(upload.path, work, ocred, pages), encoding="utf-8"
@@ -228,7 +270,15 @@ async def to_markdown(
 ) -> list[OutputFile]:
     workspace = batch.workspace("out")
     scratch = batch.workspace("convert-tmp")
-    return [
-        await to_markdown_one(upload, workspace, scratch, ocr_mode, languages)
-        for upload in batch.files
-    ]
+    publisher = progress.current()
+
+    outputs: list[OutputFile] = []
+    for index, upload in enumerate(batch.files, start=1):
+        await progress.stop_if_cancelled()
+        publisher.file(
+            index, len(batch.files), upload.original_name, "Reading the document"
+        )
+        outputs.append(
+            await to_markdown_one(upload, workspace, scratch, ocr_mode, languages)
+        )
+    return outputs

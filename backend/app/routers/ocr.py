@@ -1,4 +1,11 @@
-"""POST /ocr and GET /ocr/languages — searchable text layers via OCRmyPDF."""
+"""POST /ocr and GET /ocr/languages — searchable text layers via OCRmyPDF.
+
+Two routers, not one. ``GET /ocr/languages`` is fetched by the language picker
+on page load, before the user has done anything a token would be minted for,
+and it answers from a process-lifetime cache of ``tesseract --list-langs`` —
+effectively a static list. It is therefore mounted open, while ``POST /ocr``
+goes through the full protected stack. See ``app.routers.__init__``.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +19,10 @@ from app.services.ocr import available_languages, ocr, validate_languages
 from app.services.responses import file_response
 
 router = APIRouter(tags=["ocr"])
+languages_router = APIRouter(tags=["ocr"])
 
 
-@router.get("/ocr/languages")
+@languages_router.get("/ocr/languages")
 async def languages_endpoint() -> list[dict[str, str]]:
     """The Tesseract models installed in this image, for the language picker."""
     return [

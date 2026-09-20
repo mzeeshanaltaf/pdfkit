@@ -26,14 +26,70 @@ come out bit-identical with and without this shim.
 Why a subprocess, as with ``pdf2docx convert`` before it: ``app.services.runner``
 can only enforce a timeout on something it can kill, and it keeps pdf2docx's
 AGPL PyMuPDF engine in a process of its own.
+
+It also reports progress, as JSON lines on **stderr**, because a page-by-page
+rebuild of a long document is minutes of silence otherwise::
+
+    {"pdfkit_progress": 1, "phase": "parse", "done": 3, "total": 12}
+
+Both instrumented methods are patched the same defensive way as the whitespace
+fix below: if pdf2docx has moved something, we warn and convert without
+progress rather than not converting.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 
 EXIT_OK = 0
 EXIT_FAILED = 1
+
+#: Marks our lines out from pdf2docx's own logging, which also goes to stderr.
+#: Duplicated in ``app.services.word``; ``tests/test_shims.py`` keeps them equal.
+MARKER = "pdfkit_progress"
+
+PARSE = "parse"
+WRITE = "write"
+
+
+def _emit(phase: str, done: int, total: int) -> None:
+    """One progress line. stderr only — stdout is not ours to write on."""
+    try:
+        line = json.dumps(
+            {MARKER: 1, "phase": phase, "done": done, "total": total},
+            separators=(",", ":"),
+        )
+        print(line, file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 — never fail a conversion over a progress line
+        pass
+
+
+def _patch_progress(total: int) -> None:
+    """Count pages through ``Page.parse`` and ``Page.make_docx``.
+
+    Those are the two loops in ``Converter`` that are O(pages) and slow, and
+    they are the per-page call the loops make rather than the loops
+    themselves — so the count is right whichever of ``convert`` / ``parse`` /
+    ``make_docx`` the caller drives.
+    """
+    from pdf2docx.page.Page import Page
+
+    counters = {PARSE: 0, WRITE: 0}
+
+    def counting(phase: str, original):
+        def wrapper(self, *args, **kwargs):
+            try:
+                result = original(self, *args, **kwargs)
+            finally:
+                counters[phase] += 1
+                _emit(phase, counters[phase], total)
+            return result
+
+        return wrapper
+
+    Page.parse = counting(PARSE, Page.parse)
+    Page.make_docx = counting(WRITE, Page.make_docx)
 
 
 def _patch_spans() -> None:
@@ -85,6 +141,10 @@ def main(argv: list[str]) -> int:
 
     converter = Converter(source)
     try:
+        try:
+            _patch_progress(len(converter.fitz_doc))
+        except Exception as error:  # noqa: BLE001 — same posture as above
+            print(f"could not report progress: {error}", file=sys.stderr)
         converter.convert(destination)
     finally:
         converter.close()

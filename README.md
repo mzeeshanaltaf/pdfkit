@@ -84,6 +84,9 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 | `MAX_CONCURRENT_JOBS` | backend | `2` | Concurrent heavy jobs — subprocesses (Ghostscript/qpdf/OCR) and compression's in-process stream rewrite share the limit |
 | `JOB_TIMEOUT_SECONDS` | backend | `180` | Wall-clock ceiling for one job; per-operation overrides exist, e.g. `OCR_TIMEOUT_SECONDS` (600), `WORD_TIMEOUT_SECONDS` (300), `MARKDOWN_TIMEOUT_SECONDS` (120) |
 | `WORK_DIR` | backend | `/tmp/pdfkit` | Scratch space, mounted as tmpfs in compose |
+| `API_TOKEN_SECRET` | **both** | *(unset)* | Signs the short-lived tokens the frontend mints and the backend verifies. **One value, set on both services.** Unset, the API accepts unauthenticated requests and `/health` reports `"auth":"off"`. Runtime env, never a build arg — rotating it needs no rebuild |
+| `API_TOKEN_SECRET_PREVIOUS` | backend | *(unset)* | Verify-only. Set to the outgoing value for one deploy when rotating, so tokens already in flight keep working |
+| `FORWARDED_ALLOW_IPS` | backend | `172.16.0.0/12,10.0.0.0/8` | Read by uvicorn. Without it every visitor shares one rate-limit bucket — see the deployment gotchas |
 
 ## Deployment
 
@@ -116,6 +119,14 @@ against the Coolify API directly.
 `docker logs <frontend|backend>-b1s6cgebvkpxxrzzjp2d2244-<hash>` on the VPS for the
 running containers. `docker ps --filter name=b1s6cgebvkpxxrzzjp2d2244` finds the current
 container names (they change every deploy).
+
+**The API is a cost gate, not an open service.** Every processing endpoint needs a bearer
+token minted by the frontend's `/api/token`, and is rate-limited per IP (20/min and
+120/hour for jobs, 240/min coarse). `/health` and `GET /ocr/languages` are deliberately
+open — Traefik cannot mint a token, and the language picker fetches its list before the
+user has done anything. This stops scripted third-party use; it does **not** stop someone
+copying a token out of devtools, and nothing short of user accounts would. Set
+`API_TOKEN_SECRET` to the same `openssl rand -hex 32` value on both services in Coolify.
 
 **Known-good gotchas, already handled** — don't re-break these:
 - Traefik on this instance has no body-size limit or custom read/idle timeout configured,

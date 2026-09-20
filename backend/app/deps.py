@@ -1,10 +1,19 @@
-"""Request-scoped upload handling: validate, stream to disk, clean up afterwards.
+"""Request-scoped plumbing: the upload batch, and the per-request dependencies.
 
-Nothing here uses a FastAPI dependency with ``yield``. Since FastAPI 0.106 the
-exit half of such a dependency runs *before* the response body is sent, which
-would delete the very files we are about to stream back. Temp directories are
-therefore owned by an explicit :class:`UploadBatch` and torn down by a
-``BackgroundTask`` attached to the response (see ``app.services.responses``).
+Upload handling deliberately avoids a FastAPI dependency with ``yield``. Since
+FastAPI 0.106 the exit half of such a dependency runs *before* the response body
+is sent, which would delete the very files we are about to stream back. Temp
+directories are therefore owned by an explicit :class:`UploadBatch` and torn
+down by a ``BackgroundTask`` attached to the response (see
+``app.services.responses``).
+
+:func:`job_publisher` *is* a ``yield`` dependency, and that same timing is what
+makes it right: the job is over by the time the endpoint returns, so publishing
+the terminal frame before the download starts streaming is exactly when the
+progress bar should reach the end.
+
+The four dependencies at the bottom are attached per-router in ``app.main``
+rather than per-endpoint, so an endpoint added later cannot forget one.
 """
 
 from __future__ import annotations
@@ -19,14 +28,16 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request, UploadFile
 
+from app import config
 from app.config import (
     MAX_FILES_PER_REQUEST,
     MAX_UPLOAD_BYTES,
     MAX_UPLOAD_MB,
     WORK_DIR,
 )
+from app.services import auth, progress, ratelimit
 
 logger = logging.getLogger(__name__)
 
@@ -191,3 +202,79 @@ async def upload_batch(uploads: Sequence[UploadFile]) -> AsyncIterator[UploadBat
     except BaseException:
         batch.cleanup()
         raise
+
+
+# --- per-router dependencies -------------------------------------------------
+
+JOB_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+async def coarse_rate_limit(request: Request) -> None:
+    """A wide per-IP ceiling, applied before anything more expensive.
+
+    Runs ahead of the token check so an unauthenticated flood is bounded
+    without ever reaching the work — and so it is the only limiter that has to
+    hold state for a caller who never had a token.
+    """
+    ratelimit.enforce(request, "coarse", config.RATE_LIMIT_COARSE)
+
+
+async def require_token(request: Request) -> None:
+    if not auth.enabled():
+        return
+    try:
+        auth.verify(auth.bearer(request.headers.get("Authorization")))
+    except auth.TokenError as error:
+        raise HTTPException(
+            status_code=401,
+            detail=error.code,
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+
+
+async def job_rate_limit(request: Request) -> None:
+    """The real limit on processing work: a burst window and an hourly one."""
+    ratelimit.enforce(
+        request, "job", config.RATE_LIMIT_JOB_BURST, config.RATE_LIMIT_JOB_HOURLY
+    )
+
+
+async def progress_rate_limit(request: Request) -> None:
+    ratelimit.enforce(request, "progress", config.RATE_LIMIT_PROGRESS)
+
+
+async def job_publisher(request: Request) -> AsyncIterator[None]:
+    """Bind this request's progress publisher, and close its channel after.
+
+    A missing, malformed or already-claimed ``X-Job-Id`` is not an error: the
+    request runs with the no-op publisher and the client falls back to the
+    indeterminate bar it had before any of this existed.
+    """
+    job_id = request.headers.get("X-Job-Id", "")
+    channel = progress.registry.claim(job_id) if JOB_ID.match(job_id) else None
+    if channel is None:
+        # No progress, but still cancellable: giving up on work nobody is
+        # waiting for is worth doing whether or not anyone is watching it.
+        progress.bind(progress.NULL, request.is_disconnected)
+        yield
+        return
+
+    publisher = progress.Publisher(channel)
+    # is_disconnected is what lets a cancelled run stop the batch server-side;
+    # the body is already on disk by the time any service asks, so it is
+    # reliable here.
+    progress.bind(publisher, request.is_disconnected)
+    try:
+        yield
+    except HTTPException as error:
+        publisher.finish(
+            progress.TIMEOUT if error.status_code == 504 else progress.ERROR
+        )
+        raise
+    except BaseException:
+        publisher.finish(progress.ERROR)
+        raise
+    else:
+        publisher.finish(progress.DONE)
+    finally:
+        progress.registry.release(job_id)
