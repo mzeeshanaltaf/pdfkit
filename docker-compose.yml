@@ -29,6 +29,16 @@ services:
       # time, so it is runtime env, never a build arg and never NEXT_PUBLIC_ —
       # which also means rotating it needs no frontend rebuild.
       API_TOKEN_SECRET: ${API_TOKEN_SECRET:-}
+      # Admin dashboard (/admin) — a private, password-gated view of anonymous per-run
+      # counters. Unset DATABASE_URL and the feature degrades quietly: ingest is a no-op,
+      # the dashboard shows a "not configured" panel. All runtime env, read per request.
+      DATABASE_URL: ${DATABASE_URL:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
+      # Salts the daily-rotating visitor hash stats rows carry instead of an IP address.
+      STATS_SALT: ${STATS_SALT:-}
+      STATS_RETENTION_DAYS: ${STATS_RETENTION_DAYS:-365}
     depends_on:
       - backend
     restart: unless-stopped

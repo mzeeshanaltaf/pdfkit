@@ -1,16 +1,130 @@
 # Status
 
-Last updated: 2026-09-20 (Phase 8 — live progress and API protection, deployed)
+Last updated: 2026-09-20 (Phase 9 — admin dashboard, built locally, not yet deployed)
 
 ## Current phase
 
-**All 8 phases complete. PDFKit is live** at
-[pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
+**Phase 9 (admin dashboard) is built and verified locally, not yet deployed.** PDFKit
+itself is live at [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
 `api.pdfkit.zeeshanai.cloud`. See the root [`README.md`](README.md) for deploy notes
 (domains, redeploy process, log locations).
 
 Phase 8 shipped on 2026-09-20. The only thing left on it is a browser pass — see
 "Left to do" at the end of the Phase 8 section.
+
+## Phase 9 — Admin dashboard at `/admin` (2026-09-20)
+
+A private, password-gated dashboard answering "is anyone using this, and which tool?" —
+something Umami's page views can't answer, since a page view isn't a job. Full design in
+`docs/phases/phase-9-admin-dashboard.md`.
+
+### What is now true
+
+- **New `pdfkit` schema** on the existing shared Postgres box (`76.13.7.106`), one table
+  (`pdfkit.tool_runs`), applied idempotently on first use by `frontend/lib/db.ts` — no
+  manual migration step. `frontend/lib/stats/schema.sql` is the human-readable copy;
+  `lib/stats/schema.ts` is what actually ships (a template string, not a runtime file read,
+  so it survives the `output: "standalone"` bundle untouched).
+- **One hook, all twelve tools.** `ToolShell.handleSubmit`/`handleCancel`
+  (`components/tool/tool-shell.tsx`) call `recordRun()` (`lib/stats/record.ts`) on every
+  `done`/`error`/`cancelled` outcome — a fire-and-forget, `keepalive: true` POST to
+  `/api/stats/event` that never awaits and never surfaces an error. No per-tool edits.
+- **Ingest is a cost gate, not a trust boundary**: unknown tool → rejected, every numeric
+  field clamped, rate-limited at 60/min, always answers `204` regardless of outcome. Derives
+  `runs_in` from the registry server-side rather than trusting the client.
+- **Visitor identity is `sha256(ip + daily salt + date)`, truncated to 22 chars** — countable
+  within a day, unlinkable across days, never an IP on disk.
+- **Admin auth reuses the `/api/token` HMAC idiom** (`lib/admin/session.ts`), but over Web
+  Crypto so the identical `verifySession` runs in `proxy.ts` and in route/page handlers
+  alike. The session payload carries a fingerprint of `ADMIN_PASSWORD`, so rotating the
+  password invalidates every live cookie for free — verified: change the password, restart,
+  the old cookie stops authenticating.
+- **Login throttling has two layers**: the existing Upstash limiter (fails open by design)
+  plus a module-level in-process counter as a floor, because a password field failing open
+  is the wrong default. Verified against the real Upstash instance.
+- **The whole feature degrades quietly with `DATABASE_URL` unset**: ingest still answers
+  `204` without touching the network, the dashboard renders a "not configured" panel. This
+  was the one non-negotiable verification and it holds — a stopped/misconfigured stats DB
+  cannot fail a tool run, because `recordRun` never awaits its own fetch.
+- **Dashboard** at `/admin` (behind `proxy.ts`, Next 16's renamed `middleware.ts`): range
+  selector (24h/7d/30d/all), tiles (runs, files, pages, bytes in/out, success rate, bytes
+  Compress saved, unique visitors, median/p95 duration), a 30-day column chart, ranked
+  tool-usage bars, browser-vs-backend split, a failures table, and the last 50 runs. No
+  charting dependency — CSS/SVG, matching the project's existing hand-rolled-over-library
+  posture. Added the `Table` shadcn primitive (`npx shadcn@latest add table`).
+- **`/admin` is invisible everywhere public**: no nav link (`SiteHeader` returns `null` on
+  `/admin*`), no footer link, absent from `sitemap.xml` (confirmed), `robots.ts` disallows
+  it, and the Umami tracker (now wrapped in `components/layout/analytics.tsx`) doesn't fire
+  there either, so admin sessions never pollute public page-view counts.
+- **`app/(site)/privacy/page.tsx`** gained an honest paragraph on the anonymous counters;
+  `llms.txt` no longer implies zero server-side state.
+
+### A framework surprise worth remembering
+
+This Next.js install (16.3.5) has already renamed `middleware.ts` → `proxy.ts` (function
+`middleware()` → `proxy()`); the old convention still works but logs a deprecation warning
+and there's a codemod (`npx @next/codemod@canary middleware-to-proxy .`). Proxy also now
+defaults to the **Node.js runtime**, not Edge — irrelevant here since `lib/admin/session.ts`
+was written against Web Crypto rather than `node:crypto` regardless, specifically so it
+would run unmodified wherever Proxy landed.
+
+### Verified
+
+`npm run lint`, `npx tsc --noEmit`, `npm run build` all clean (27 routes, `/admin` and
+`/admin/login` both dynamic). `docker compose --profile test run --rm backend-tests` → still
+**166 passed** — the backend has zero diff for this phase (`git status --short backend/` is
+empty).
+
+Against `next dev` on port 3000 with the real shared Postgres and real Upstash: confirmed
+via `psql` that `pdfkit.tool_runs` has the right shape and every `visitor` value is a
+22-char hash, never an IP; posted a hand-crafted event with an unknown tool, a negative
+`file_count` and a 100 KB `error_code` and confirmed it was rejected with `204` and **no
+row written**; ran a real Merge (two real fixture PDFs, in a real headless browser via the
+`browse` skill) end to end and confirmed the exact row it produced (`tool=merge,
+runs_in=browser, outcome=done, file_count=2, page_count=7`, byte counts matching the actual
+files); posted synthetic `error` and `cancelled` events for other tools and confirmed they
+show up correctly in the failures table and recent-runs table; confirmed `/admin` with no
+cookie 307s to `/admin/login`, and `/admin/login` itself renders a plain, un-hydrated form;
+6 wrong-password attempts against the same IP throttle (429) as expected, using the real
+Upstash-backed limiter; changed `ADMIN_PASSWORD` and restarted — the previously-valid
+session cookie stopped authenticating, then changed it back and confirmed the original
+cookie value was never valid again either (a new login was required, as intended — a
+session is bound to the password in effect *at the time it was issued*); confirmed the
+degrade path by starting a second `next dev` with `DATABASE_URL` forced empty — ingest still
+`204`s, dashboard shows "Stats are not configured", nothing else affected. Login page
+screenshotted at desktop and 390px width, light and dark — no overflow, matches the
+existing design system (same Card/Input/Button primitives, same brand teal).
+
+**Not done, and worth knowing for next session:** the authenticated dashboard itself
+(tiles/charts/tables with real data) was verified by inspecting the rendered HTML over curl
+with a valid session cookie, not with an in-browser screenshot — by the time synthetic data
+existed to look at, the login-throttle window (15 min, shared per-IP bucket with the earlier
+curl-based throttle test) was still active for the headless browser's IP, and waiting it out
+wasn't worth the wall-clock cost this session. The HTML was byte-checked against expected
+values (tile numbers, table rows) and it renders with the same components used everywhere
+else in the app, so the risk is low, but a real screenshot of the populated dashboard is the
+one item left before calling this phase fully closed.
+
+### Env additions
+
+Six new runtime vars (never `NEXT_PUBLIC_`, never build args): `DATABASE_URL`,
+`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `STATS_SALT`,
+`STATS_RETENTION_DAYS`. Wired into `docker-compose.yml`, documented in both
+`.env.example` files, and added to both local `.env` / `.env.local` files (gitignored) for
+this machine — `DATABASE_URL` had to be copied into `frontend/.env.local` specifically,
+since Next reads env from the app directory and the repo-root copy alone isn't visible to
+`next dev` or the Next build.
+
+### Left to do before this can be called deployed
+
+1. The dashboard screenshot noted above.
+2. Generate **production** values for all six vars (not the local-dev ones committed to
+   gitignored files here) and add them to the Coolify app as runtime, non-preview
+   variables — `ADMIN_SESSION_SECRET` and `STATS_SALT` via `openssl rand -hex 32`, a real
+   `ADMIN_PASSWORD`, and `DATABASE_URL` is already known-good (same server Phase 9 was
+   built against).
+3. Push to `main` and let the existing GitHub Actions workflow deploy it, then repeat the
+   curl-based auth/degrade checks against the live domain the way Phase 7/8 did.
 
 ## Phase 8 — Live progress + API protection (2026-09-20)
 

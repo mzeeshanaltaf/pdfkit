@@ -23,6 +23,10 @@ const QUICK_LINKS = ["merge", "compress", "split"] as const;
 export function SiteHeader() {
   const pathname = usePathname();
 
+  // `/admin` has its own chrome (see `app/(admin)/admin/page.tsx`) and is deliberately
+  // absent from every public surface — the nav bar included.
+  if (pathname.startsWith("/admin")) return null;
+
   return (
     <header className="sticky top-0 z-40 h-16 shrink-0 border-b border-border bg-background/85 backdrop-blur">
       <div className="mx-auto flex h-full max-w-[1400px] items-center gap-2 px-4 sm:px-6">

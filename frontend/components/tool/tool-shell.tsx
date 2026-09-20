@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api";
 import { PdfLoadError } from "@/lib/pdf/load";
 import { handOffFiles } from "@/lib/file-handoff";
+import { recordRun } from "@/lib/stats/record";
 import { getTool, toolHref, type Tool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +89,7 @@ export function ToolShell({
   /** True when the run failed because a file turned out to be encrypted. See `handleSubmit`. */
   const [failedOnPassword, setFailedOnPassword] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const runStartRef = useRef(0);
 
   const { getRootProps, getInputProps, isDragActive, open } = usePdfDropzone({
     tool,
@@ -131,6 +133,15 @@ export function ToolShell({
   const handleSubmit = useCallback(async () => {
     const controller = new AbortController();
     abortRef.current = controller;
+    runStartRef.current = Date.now();
+
+    const fileCount = readableFiles.length;
+    const anyPageCountUnknown = readableFiles.some((file) => file.pageCount === null);
+    const pageCount = anyPageCountUnknown
+      ? null
+      : readableFiles.reduce((sum, file) => sum + (file.pageCount ?? 0), 0);
+    const bytesIn = readableFiles.reduce((sum, file) => sum + file.size, 0);
+    const durationMs = () => Date.now() - runStartRef.current;
 
     setPhase("processing");
     setFailedOnPassword(false);
@@ -150,6 +161,15 @@ export function ToolShell({
       if (controller.signal.aborted) return;
       setResult(output);
       setPhase("done");
+      recordRun({
+        tool: tool.id,
+        outcome: "done",
+        fileCount,
+        pageCount,
+        bytesIn,
+        bytesOut: output.blob.size,
+        durationMs: durationMs(),
+      });
     } catch (error) {
       if (controller.signal.aborted) return;
 
@@ -160,6 +180,16 @@ export function ToolShell({
       if (error instanceof ApiError && error.recoverable) {
         if (!error.silent) toast.error(error.message);
         setPhase("idle");
+        recordRun({
+          tool: tool.id,
+          outcome: "error",
+          fileCount,
+          pageCount,
+          bytesIn,
+          bytesOut: 0,
+          durationMs: durationMs(),
+          errorCode: error.code,
+        });
         return;
       }
 
@@ -169,11 +199,21 @@ export function ToolShell({
       setFailedOnPassword(error instanceof PdfLoadError && error.kind === "encrypted");
       setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
       setPhase("error");
+      recordRun({
+        tool: tool.id,
+        outcome: "error",
+        fileCount,
+        pageCount,
+        bytesIn,
+        bytesOut: 0,
+        durationMs: durationMs(),
+        errorCode: error instanceof PdfLoadError ? error.kind : undefined,
+      });
     } finally {
       setProgress(null);
       setDetail(null);
     }
-  }, [process, readableFiles]);
+  }, [process, readableFiles, tool.id]);
 
   /**
    * Stop the run and go back to the file list.
@@ -192,7 +232,20 @@ export function ToolShell({
     setProgress(null);
     setDetail(null);
     setPhase("idle");
-  }, []);
+
+    const anyPageCountUnknown = readableFiles.some((file) => file.pageCount === null);
+    recordRun({
+      tool: tool.id,
+      outcome: "cancelled",
+      fileCount: readableFiles.length,
+      pageCount: anyPageCountUnknown
+        ? null
+        : readableFiles.reduce((sum, file) => sum + (file.pageCount ?? 0), 0),
+      bytesIn: readableFiles.reduce((sum, file) => sum + file.size, 0),
+      bytesOut: 0,
+      durationMs: Date.now() - runStartRef.current,
+    });
+  }, [readableFiles, tool.id]);
 
   const startOver = useCallback(() => {
     abortRef.current?.abort();

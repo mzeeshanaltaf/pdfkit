@@ -19,7 +19,7 @@ export const metadata: Metadata = {
 const BROWSER_TOOLS = TOOLS.filter((tool) => tool.runsIn === "browser");
 const SERVER_TOOLS = TOOLS.filter((tool) => tool.runsIn !== "browser");
 
-const LAST_UPDATED = "19 September 2026";
+const LAST_UPDATED = "20 September 2026";
 
 const LINK_CLASS =
   "rounded-sm text-foreground underline underline-offset-4 transition-colors hover:text-brand focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none";
@@ -123,6 +123,23 @@ export default function PrivacyPage() {
             That check keeps a short-lived counter keyed to your IP in a hosted Redis
             instance; the counter expires on its own and is not tied to anything else about
             you. The form also carries a hidden field that only automated scripts fill in.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold tracking-tight">Anonymous usage counters</h2>
+          <p className="mt-4 text-base leading-relaxed text-muted-foreground">
+            Each time a tool finishes, is cancelled, or fails, we record a single anonymous
+            counter row: which tool, how many files and pages, how large they were, how long
+            it took, and whether it succeeded. This is what tells us which tools are actually
+            used, not a record of what any one person did.
+          </p>
+          <p className="mt-4 text-base leading-relaxed text-muted-foreground">
+            No IP address is ever stored. Instead, each row carries a one-way hash of your IP
+            address combined with a secret that rotates every day, so the same visitor hashes
+            the same way only within a single day and cannot be linked across days or back to
+            an IP address. The contents of your file are never part of this: only counts and
+            sizes are recorded, never the document itself.
           </p>
         </section>
 

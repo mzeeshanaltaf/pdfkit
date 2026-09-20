@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Script from "next/script";
 
+import { Analytics } from "@/components/layout/analytics";
 import { SiteHeader } from "@/components/layout/site-header";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -73,13 +73,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           {children}
           <Toaster position="bottom-center" />
         </ThemeProvider>
-        {process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID && (
-          <Script
-            src={process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL}
-            data-website-id={process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID}
-            strategy="afterInteractive"
-          />
-        )}
+        <Analytics />
       </body>
     </html>
   );
