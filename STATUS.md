@@ -1,17 +1,16 @@
 # Status
 
-Last updated: 2026-09-20 (Phase 8 — live progress and API protection, built and locally verified)
+Last updated: 2026-09-20 (Phase 8 — live progress and API protection, deployed)
 
 ## Current phase
 
-**Phases 0-7 complete; PDFKit is live** at
+**All 8 phases complete. PDFKit is live** at
 [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
 `api.pdfkit.zeeshanai.cloud`. See the root [`README.md`](README.md) for deploy notes
 (domains, redeploy process, log locations).
 
-**Phase 8 is code-complete and verified locally, and has not been deployed.** The
-remaining work is the deploy itself and the four checks that can only be done against
-production — see "Left to do" at the end of the Phase 8 section.
+Phase 8 shipped on 2026-09-20. The only thing left on it is a browser pass — see
+"Left to do" at the end of the Phase 8 section.
 
 ## Phase 8 — Live progress + API protection (2026-09-20)
 
@@ -121,21 +120,51 @@ stream cap holds at 4 and a 429 there does not touch processing; an aborted batc
 "client disconnected; abandoning the rest of the batch" and stops early.
 `npm run lint`, `npx tsc --noEmit` and `npm run build` are all clean.
 
+### Deployed and verified in production (2026-09-20)
+
+`API_TOKEN_SECRET` (a fresh `openssl rand -hex 32`, **not** the one in the local `.env`)
+and `FORWARDED_ALLOW_IPS` were added to the Coolify app as runtime, non-preview variables
+via the API, then `main` was pushed and the usual GitHub Actions workflow deployed it.
+Coolify automatically mirrors each new variable into its preview environment too; those
+copies are inert, this app has no preview deployments.
+
+Checked against the live domains:
+
+- `/health` → `{"status":"ok","auth":"on","jobs":0,"streams":0,"clients":N,"client":"<a real public IP>"}`.
+  **That last field is the proxy-headers proof**: it shows the caller's own public address,
+  not a `172.x` Docker bridge one, so uvicorn is trusting Traefik's headers and per-IP
+  limits are really per IP. If it ever reads as a bridge address again,
+  `FORWARDED_ALLOW_IPS` has been lost and the whole site is sharing one bucket.
+- `POST /compress` with no token → `401 auth_required`; `GET /ocr/languages` → 200.
+- `POST https://pdfkit.zeeshanai.cloud/api/token` mints, and the backend accepts it —
+  so both services genuinely hold the same secret.
+- A three-file OCR with `X-Job-Id`: `hello` → state frames climbing 0 → 100 across files
+  1-3 → `end{done}`, **arriving live rather than buffered**, and the POST still returned
+  its zip. Traefik is not buffering the event stream.
+- 20 job requests in a minute → `429 rate_limited` with `Retry-After`, keyed on the real
+  public address.
+
 ### Left to do
 
-1. **Deploy.** Set `API_TOKEN_SECRET` (one `openssl rand -hex 32`, the *same* value on
-   both services) and `FORWARDED_ALLOW_IPS` in Coolify, then push. Nothing new is a build
-   arg, so rotating the secret later needs no frontend rebuild.
-2. **Browser pass** on all seven backend tools with three files each — the file counter,
-   the climbing bar, Cancel mid-OCR returning to an intact file list, and `/progress`
-   blocked in devtools falling back to today's indeterminate bar. The server side of each
-   of these is verified; what is not yet verified is how they look.
-3. **Confirm the client IP in production**: hit `/health` from a phone tether and from the
-   VPS and check they report **two different** addresses. If they match,
-   `FORWARDED_ALLOW_IPS` has not taken and every visitor is sharing one bucket — check this
-   before trusting the limits.
-4. **Leave a progress stream open for ten minutes** against the public domain and confirm
-   the 15-second keep-alives hold it through Traefik without a 502.
+**A browser pass**, which is the one thing curl cannot stand in for: all seven backend
+tools with three files each — the file counter, the climbing bar, Cancel mid-OCR returning
+to an intact file list, and `/progress` blocked in devtools falling back to the
+indeterminate bar. Every one of these is verified server-side; what is unverified is how
+they look.
+
+Two smaller ones, both low-risk: a ten-minute idle progress stream to confirm the
+15-second keep-alives hold through Traefik without a 502, and the phone-tether half of the
+client-IP check (the public address already observed makes this close to redundant).
+
+### A rough edge worth knowing about
+
+With `API_TOKEN_SECRET` unset, the two services disagree about what to do. The backend
+degrades to open and says so loudly (startup warning, `"auth":"off"` on `/health`); the
+frontend's `/api/token` returns 503, `getToken()` throws, and **every backend tool fails
+with a toast**. So a half-configured deploy is an outage rather than a warning. Making the
+mint route return a sentinel the client sends as no header at all would restore the
+symmetry. Not done — it is beyond what the phase doc specifies, and the variable is set
+now — but it is the first thing to fix if this is ever deployed somewhere new.
 
 ## Phase 7 — Deploy to Coolify (2026-09-20)
 
