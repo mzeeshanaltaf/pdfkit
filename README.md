@@ -78,6 +78,8 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 |---|---|---|---|
 | `NEXT_PUBLIC_API_URL` | frontend | `http://localhost:8000` | Baked in at **build** time — the Docker image must be rebuilt to change it |
 | `NEXT_PUBLIC_SITE_URL` | frontend | `http://localhost:3000` | Baked in at **build** time. Left unset in production, every canonical URL, OG URL, sitemap entry and `llms.txt` link ships pointing at localhost |
+| `NEXT_PUBLIC_UMAMI_SCRIPT_URL` | frontend | *(unset)* | Self-hosted Umami tracker script URL, e.g. `https://analytics.example.com/script.js`. Baked in at **build** time. Optional — unset, `layout.tsx` renders no tracker |
+| `NEXT_PUBLIC_UMAMI_WEBSITE_ID` | frontend | *(unset)* | The site's UUID from the Umami dashboard. Baked in at **build** time. Also gates whether the script tag renders at all |
 | `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins |
 | `MAX_UPLOAD_MB` | backend | `50` | Per-file cap; the frontend enforces the same number client-side |
 | `MAX_OCR_LANGUAGES` | backend | `3` | Most languages one OCR request may combine; the picker mirrors this number |
@@ -96,7 +98,10 @@ as a single **Docker Compose** resource (app uuid `b1s6cgebvkpxxrzzjp2d2244`, pr
 "PDFKit") built from this repo's `docker-compose.yml`.
 
 Build-time args (frontend): `NEXT_PUBLIC_API_URL=https://api.pdfkit.zeeshanai.cloud`,
-`NEXT_PUBLIC_SITE_URL=https://pdfkit.zeeshanai.cloud`. Runtime (backend):
+`NEXT_PUBLIC_SITE_URL=https://pdfkit.zeeshanai.cloud`,
+`NEXT_PUBLIC_UMAMI_SCRIPT_URL=https://analytics.zeeshanai.cloud/script.js`,
+`NEXT_PUBLIC_UMAMI_WEBSITE_ID=<uuid>` (self-hosted Umami; the site's dashboard traffic
+lives at analytics.zeeshanai.cloud). Runtime (backend):
 `CORS_ORIGINS=https://pdfkit.zeeshanai.cloud`. The contact form's four vars
 (`N8N_CONTACT_WEBHOOK_URL`, `N8N_API_KEY`, `UPSTASH_REDIS_REST_URL`,
 `UPSTASH_REDIS_REST_TOKEN`) are frontend runtime vars, set directly in Coolify rather than
