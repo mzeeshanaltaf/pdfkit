@@ -1,7 +1,28 @@
+import { Laptop, Server } from "lucide-react";
 import Link from "next/link";
 
-import { ACCENT_TILE_CLASS, type Tool, toolHref } from "@/lib/tools";
+import { ACCENT_TILE_CLASS, type Tool, type ToolRuntime, toolHref } from "@/lib/tools";
 import { cn } from "@/lib/utils";
+
+const RUNTIME_LABEL: Record<ToolRuntime, string> = {
+  browser: "Runs in your browser",
+  backend: "Runs on the server",
+  hybrid: "Runs in your browser or on the server",
+};
+
+function RuntimeIndicator({ runsIn }: { runsIn: ToolRuntime }) {
+  return (
+    <span
+      className="mt-auto flex items-center gap-1 pt-2 text-muted-foreground/80"
+      title={RUNTIME_LABEL[runsIn]}
+    >
+      {runsIn !== "backend" && <Laptop className="size-3.5" aria-hidden />}
+      {runsIn === "hybrid" && <span className="text-[10px] leading-none">/</span>}
+      {runsIn !== "browser" && <Server className="size-3.5" aria-hidden />}
+      <span className="sr-only">{RUNTIME_LABEL[runsIn]}</span>
+    </span>
+  );
+}
 
 export function ToolCard({ tool }: { tool: Tool }) {
   const Icon = tool.icon;
@@ -23,13 +44,7 @@ export function ToolCard({ tool }: { tool: Tool }) {
       <span className="font-semibold tracking-tight text-card-foreground">{tool.name}</span>
       <span className="text-sm leading-relaxed text-muted-foreground">{tool.tagline}</span>
 
-      <span className="mt-auto pt-2 text-xs font-medium text-muted-foreground/80">
-        {tool.runsIn === "browser"
-          ? "Runs in your browser"
-          : tool.runsIn === "hybrid"
-            ? "Browser or server"
-            : "Runs on the server"}
-      </span>
+      <RuntimeIndicator runsIn={tool.runsIn} />
     </Link>
   );
 }
