@@ -1,21 +1,73 @@
 # Status
 
-Last updated: 2026-09-19 (Phase 6 + SEO pass + Contact/Privacy pages + two new tools
-+ the PDF-to-Word whitespace fix + 13 more OCR languages)
+Last updated: 2026-09-20 (Phase 7 — deployed to production)
 
 ## Current phase
 
-**Phase 6 — Polish** — ✅ complete. Responsive, metadata, icons, empty and error states,
-cross-tool consistency and accessibility all went through the full verification matrix, and
-the three defects it turned up are fixed. **The app is deploy-ready.**
+**All 7 phases complete. PDFKit is live** at
+[pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
+`api.pdfkit.zeeshanai.cloud`. See the root [`README.md`](README.md) for deploy notes
+(domains, redeploy process, log locations).
 
-An **SEO pass**, a **Contact + Privacy** addition and then **two new tools** ran after
-Phase 6 (see below). Still deploy-ready.
+## Phase 7 — Deploy to Coolify (2026-09-20)
 
-Next up: **Phase 7 — Deploy to Coolify**. See [`docs/phases/phase-7-*.md`](docs/phases/).
-Two items were added to that phase doc by the conversion work: the body-size check now
-also covers the two new endpoints, and there is a **new proxy read-timeout check**, because
-PDF to Word with OCR can legitimately hold one request open for several minutes.
+Deployed as a single **Docker Compose** resource (`b1s6cgebvkpxxrzzjp2d2244`, project
+"PDFKit") on the existing Coolify instance on the Hostinger VPS, via the
+`add-app-to-coolify` skill driving Coolify's REST API directly (`POST
+/applications/public` with `build_pack: "dockercompose"` — there is no separate
+"create docker-compose app" endpoint; a single `docker_compose_domains` array maps each
+compose service to its own domain).
+
+**Two real deploy failures, both fixed and now permanent in the repo:**
+
+1. **`npm ci` failed in the frontend build**: `Missing: @emnapi/runtime, @emnapi/core from
+   lock file`. The committed lockfile was last resolved on a Windows dev machine, which
+   drops Linux-only optional deps. Fixed by switching `frontend/Dockerfile`'s install step
+   from `npm ci` to `npm install` — non-strict, reconciles in-container, no lockfile
+   regeneration needed. Don't revert this to `npm ci` without regenerating the lockfile on
+   Linux first.
+2. **Backend container failed to start**: `Bind for 0.0.0.0:8000 failed: port is already
+   allocated`. `docker-compose.yml` published `3000:3000` / `8000:8000` straight to the
+   host, and host port 8000 was already held by Coolify's own dashboard/API container —
+   this was never a problem locally because nothing else on a dev machine binds 8000.
+   Traefik only needs the internal Docker network to reach a container (it already had the
+   right labels), so both services now use `expose` instead of `ports`.
+   `docker-compose.override.yml` (new, gitignored-adjacent but committed) adds the host
+   port mappings back — `docker compose up` merges override files automatically, so local
+   dev is unaffected, but Coolify (pointed only at `docker-compose.yml`) never sees them.
+
+**Also fixed as part of this phase:** `NEXT_PUBLIC_SITE_URL` wasn't wired into
+`docker-compose.yml`'s frontend `build.args` at all (only `NEXT_PUBLIC_API_URL` was) —
+the open item flagged at the end of the SEO pass. Added to both `docker-compose.yml` and
+`frontend/Dockerfile`'s `ARG`/`ENV` pair; verified post-deploy that canonical/OG URLs and
+the sitemap resolve to `pdfkit.zeeshanai.cloud`, not `localhost:3000`.
+
+**Traefik gotchas the phase doc called out — both turned out to be non-issues on this
+instance**: no body-size-limiting middleware and no custom read/idle timeout are
+configured anywhere in `/data/coolify/proxy/dynamic/`, so the 50 MB upload cap and the
+~900 s worst-case PDF-to-Word-with-OCR request are both bounded only by the backend's own
+timeouts, which is what we want (a `504 processing_timed_out` from the app, never a
+proxy-level cutoff). Confirmed by running a real `ocr=auto` PDF-to-Word conversion against
+the public domain rather than by inspecting config alone.
+
+**Auto-deploy**: GitHub Actions (`.github/workflows/deploy.yml`), not Coolify's built-in
+git-push webhook — retries with backoff against `POST /api/v1/deploy`, because the raw
+webhook is fire-once and silently drops a deploy on a transient 502. Coolify's own
+"Auto Deploy" toggle is off for this app so the two can't double-fire. Repo secrets
+`COOLIFY_API_TOKEN` (deploy-scoped) and `COOLIFY_APP_UUID` are set. Verified live: the push
+that added the workflow file was itself the trigger, and it deployed successfully.
+
+**Verified against the public domains**: landing page 200 over HTTPS with a real Let's
+Encrypt cert (both `pdfkit.zeeshanai.cloud` and `api.pdfkit.zeeshanai.cloud`); `/health` →
+`{"status":"ok"}`; canonical/OG/sitemap all resolve to the real domain; CORS preflight from
+`https://pdfkit.zeeshanai.cloud` succeeds; Compress and OCR both succeed against the public
+API (OCR still lists all 14 languages); the `/tmp/pdfkit` tmpfs mount kept its
+`pdfkit:pdfkit` (1001:1001) ownership through Coolify's compose handling — the Phase 4
+regression this step exists to catch; a real PDF-to-Word `ocr=auto` job completed in ~6 s
+with no proxy-level interruption; `/contact` submitted for real and returned
+`{"success":true}` (the n8n webhook and Upstash rate-limit vars were already sitting in
+`.env.local` from earlier local testing, so they went straight into Coolify rather than
+being left unset). VPS disk: 49% used, 50 GB free, weekly cleanup cron still active.
 
 ## OCR languages: 1 → 14 (2026-09-19)
 
@@ -347,7 +399,7 @@ missing, every canonical, OG URL, sitemap entry and llms.txt link ships pointing
 - [x] Phase 4 — Backend services (Compress, Protect, Unlock, OCR, Extract images) + tests
 - [x] Phase 5 — Wire backend tools into UI — **feature-complete**
 - [x] Phase 6 — Polish (responsive, metadata, edge cases, a11y) — **deploy-ready**
-- [ ] Phase 7 — Deploy to Coolify
+- [x] Phase 7 — Deploy to Coolify — **live** at pdfkit.zeeshanai.cloud
 
 ## What Phase 1 built
 

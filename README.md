@@ -77,6 +77,7 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 | Variable | Service | Default | Notes |
 |---|---|---|---|
 | `NEXT_PUBLIC_API_URL` | frontend | `http://localhost:8000` | Baked in at **build** time — the Docker image must be rebuilt to change it |
+| `NEXT_PUBLIC_SITE_URL` | frontend | `http://localhost:3000` | Baked in at **build** time. Left unset in production, every canonical URL, OG URL, sitemap entry and `llms.txt` link ships pointing at localhost |
 | `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins |
 | `MAX_UPLOAD_MB` | backend | `50` | Per-file cap; the frontend enforces the same number client-side |
 | `MAX_OCR_LANGUAGES` | backend | `3` | Most languages one OCR request may combine; the picker mirrors this number |
@@ -86,14 +87,43 @@ Copy `.env.example` to `.env` at the repo root for compose, and
 
 ## Deployment
 
-Target is Coolify on the Hostinger VPS (`zeeshanai.cloud`), deployed as a single
-**Docker Compose** resource built from this `docker-compose.yml`:
+**Live** at [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
+`api.pdfkit.zeeshanai.cloud`. Runs on Coolify on the Hostinger VPS (`zeeshanai.cloud`),
+as a single **Docker Compose** resource (app uuid `b1s6cgebvkpxxrzzjp2d2244`, project
+"PDFKit") built from this repo's `docker-compose.yml`.
 
-- `pdfkit.zeeshanai.cloud` → `frontend` (port 3000)
-- `api.pdfkit.zeeshanai.cloud` → `backend` (port 8000)
+Build-time args (frontend): `NEXT_PUBLIC_API_URL=https://api.pdfkit.zeeshanai.cloud`,
+`NEXT_PUBLIC_SITE_URL=https://pdfkit.zeeshanai.cloud`. Runtime (backend):
+`CORS_ORIGINS=https://pdfkit.zeeshanai.cloud`. The contact form's four vars
+(`N8N_CONTACT_WEBHOOK_URL`, `N8N_API_KEY`, `UPSTASH_REDIS_REST_URL`,
+`UPSTASH_REDIS_REST_TOKEN`) are frontend runtime vars, set directly in Coolify rather than
+in the compose file.
 
-Set `NEXT_PUBLIC_API_URL=https://api.pdfkit.zeeshanai.cloud` as a **build** argument
-and `CORS_ORIGINS=https://pdfkit.zeeshanai.cloud` as a backend runtime variable.
-Traefik's default request body limit needs raising to clear the 50 MB upload cap.
+**`docker-compose.yml` publishes no host ports** (`expose`, not `ports`) — Coolify's
+Traefik reaches both containers over the internal Docker network via its own labels, and
+a host-published port collided with Coolify's own dashboard, which already binds host
+`8000`. `docker-compose.override.yml` adds `3000:3000` / `8000:8000` back for local dev
+only; `docker compose up` merges it automatically, and Coolify never reads it (it's
+pointed at `docker-compose.yml` alone).
 
-Full deploy steps are written up in Phase 7 (`docs/phases/`).
+**Redeploying**: push to `main`. `.github/workflows/deploy.yml` calls Coolify's deploy API
+with retries (Coolify's own git-push webhook is fire-once and silently drops a deploy on a
+transient 502, so it's turned off for this app). To redeploy without a code change, re-run
+that workflow from the Actions tab, or `POST /api/v1/deploy?uuid=b1s6cgebvkpxxrzzjp2d2244`
+against the Coolify API directly.
+
+**Logs**: Coolify's dashboard (Application → pdfkit → Logs) for build logs, or
+`docker logs <frontend|backend>-b1s6cgebvkpxxrzzjp2d2244-<hash>` on the VPS for the
+running containers. `docker ps --filter name=b1s6cgebvkpxxrzzjp2d2244` finds the current
+container names (they change every deploy).
+
+**Known-good gotchas, already handled** — don't re-break these:
+- Traefik on this instance has no body-size limit or custom read/idle timeout configured,
+  so the 50 MB upload cap and the ~900 s worst-case PDF-to-Word-with-OCR request are both
+  bounded only by the backend's own timeouts (a `504 processing_timed_out` from the app,
+  never a silent proxy cutoff). If that ever changes, both need re-verifying.
+- The frontend Docker build uses `npm install`, not `npm ci` — the committed lockfile is
+  resolved on Windows dev machines and drops Linux-only optional deps, which `npm ci`
+  refuses to reconcile.
+- The backend's `/tmp/pdfkit` tmpfs mount pins `uid=1001,gid=1001,mode=0700` explicitly;
+  a bare tmpfs mount masks the image's chown and every upload 500s.
