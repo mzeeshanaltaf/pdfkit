@@ -31,6 +31,7 @@ import io
 import logging
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -362,7 +363,13 @@ def _rebuild(entry: _Program) -> bytes:
     return out.getvalue()
 
 
-def subset(source: Path, destination: Path, *, deadline: float | None = None) -> bool:
+def subset(
+    source: Path,
+    destination: Path,
+    *,
+    deadline: float | None = None,
+    on_step: Callable[[int, int], None] | None = None,
+) -> bool:
     """Rewrite ``source`` into ``destination`` with its fonts cut to size.
 
     Blocking and CPU-bound — call it in a thread, holding a job slot. Returns
@@ -381,7 +388,13 @@ def subset(source: Path, destination: Path, *, deadline: float | None = None) ->
         return False
 
     gained = 0
-    for entry in scan.programs.values():
+    # Lumpy on purpose, and not worth "fixing": one 7 MB emoji font is most of
+    # the work and exactly one tick, while a document with forty small fonts
+    # ticks forty times. Weighting by stored size would be a lie of a different
+    # shape, because subsetting cost tracks glyph count, not bytes.
+    for position, entry in enumerate(scan.programs.values(), start=1):
+        if on_step is not None:
+            on_step(position, len(scan.programs))
         if deadline is not None and time.monotonic() > deadline:
             logger.warning("font subsetting of %s ran out of time", source.name)
             return False

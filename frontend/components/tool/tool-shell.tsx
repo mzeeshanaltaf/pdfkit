@@ -82,6 +82,7 @@ export function ToolShell({
   const [phase, setPhase] = useState<ToolPhase>("idle");
   const [progress, setProgress] = useState<number | null>(null);
   const [stage, setStage] = useState("Working on it");
+  const [detail, setDetail] = useState<string | null>(null);
   const [result, setResult] = useState<ToolResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   /** True when the run failed because a file turned out to be encrypted. See `handleSubmit`. */
@@ -135,6 +136,7 @@ export function ToolShell({
     setFailedOnPassword(false);
     setProgress(null);
     setStage("Working on it");
+    setDetail(null);
     setErrorMessage(null);
 
     try {
@@ -142,6 +144,7 @@ export function ToolShell({
         files: readableFiles,
         setProgress,
         setStage,
+        setDetail,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -168,8 +171,28 @@ export function ToolShell({
       setPhase("error");
     } finally {
       setProgress(null);
+      setDetail(null);
     }
   }, [process, readableFiles]);
+
+  /**
+   * Stop the run and go back to the file list.
+   *
+   * The phase reset has to happen *here*, not in `handleSubmit`'s catch: that catch
+   * returns early on an aborted signal without touching the phase, which was invisible
+   * while the only aborts came from unmounting. Leave it to the catch and cancelling
+   * strands the UI on the spinner for good.
+   *
+   * On the server side the batch stops between files — the backend checks whether the
+   * client is still there before starting each one.
+   */
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setProgress(null);
+    setDetail(null);
+    setPhase("idle");
+  }, []);
 
   const startOver = useCallback(() => {
     abortRef.current?.abort();
@@ -190,7 +213,12 @@ export function ToolShell({
   if (status === "processing") {
     return (
       <>
-        <ProcessingView progress={progress} stage={stage} />
+        <ProcessingView
+          progress={progress}
+          stage={stage}
+          detail={detail}
+          onCancel={handleCancel}
+        />
         {overlay}
       </>
     );

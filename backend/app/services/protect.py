@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
+from app.services import progress
 from app.services.passwords import argument_file
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import run, sanitise
@@ -61,7 +62,13 @@ async def protect_one(
 async def protect(batch: UploadBatch, password: str) -> list[OutputFile]:
     workspace = batch.workspace("out")
     secrets = batch.workspace("secrets")
-    return [
-        await protect_one(upload, workspace, secrets, password, index)
-        for index, upload in enumerate(batch.files)
-    ]
+    publisher = progress.current()
+
+    outputs: list[OutputFile] = []
+    for index, upload in enumerate(batch.files):
+        await progress.stop_if_cancelled()
+        # qpdf is milliseconds-scale, so which file we are on is the whole
+        # honest story here — there is no sub-step worth reporting.
+        publisher.file(index + 1, len(batch.files), upload.original_name, "Encrypting")
+        outputs.append(await protect_one(upload, workspace, secrets, password, index))
+    return outputs

@@ -23,6 +23,7 @@ import logging
 import re
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -363,12 +364,17 @@ def rebuild(
     *,
     precision: int | None = None,
     deadline: float | None = None,
+    on_step: Callable[[int, int], None] | None = None,
 ) -> bool:
     """Write ``source`` to ``destination`` with its content streams shortened.
 
     Blocking and CPU-bound — call it in a thread, holding a job slot. Returns
     False if the document could not be rebuilt, in which case ``destination``
     must not be used.
+
+    ``on_step(done, total)`` is called as each content stream is finished, for
+    the progress bar. It runs on this thread, so it must not touch the event
+    loop directly — see ``app.services.compress._threaded_reporter``.
     """
     try:
         writer = PdfWriter(clone_from=str(source))
@@ -377,7 +383,9 @@ def rebuild(
         logger.info("could not rebuild %s: %s", source.name, error)
         return False
 
-    for stream in streams:
+    for position, stream in enumerate(streams, start=1):
+        if on_step is not None:
+            on_step(position, len(streams))
         if deadline is not None and time.monotonic() > deadline:
             logger.warning("stream rewrite of %s ran out of time", source.name)
             return False

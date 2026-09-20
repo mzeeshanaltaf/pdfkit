@@ -19,8 +19,13 @@ services:
       N8N_CONTACT_WEBHOOK_URL: ${N8N_CONTACT_WEBHOOK_URL:-}
       N8N_API_KEY: ${N8N_API_KEY:-}
       # Optional: unset, the rate limiter fails open and the form still works.
+      # Also used by /api/token, which fails open the same way.
       UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
       UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
+      # The same secret the backend verifies with. /api/token reads it at request
+      # time, so it is runtime env, never a build arg and never NEXT_PUBLIC_ —
+      # which also means rotating it needs no frontend rebuild.
+      API_TOKEN_SECRET: ${API_TOKEN_SECRET:-}
     depends_on:
       - backend
     restart: unless-stopped
@@ -40,6 +45,19 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      # Same value as the frontend's. Unset, the API accepts unauthenticated
+      # requests and says so loudly at startup and on /health.
+      API_TOKEN_SECRET: ${API_TOKEN_SECRET:-}
+      # Verify-only, so the secret above can be rotated without cutting off the
+      # tokens already in flight.
+      API_TOKEN_SECRET_PREVIOUS: ${API_TOKEN_SECRET_PREVIOUS:-}
+      # THE variable behind per-IP rate limiting. uvicorn reads this itself, and
+      # its default is 127.0.0.1 — Traefik reaches this container from a Docker
+      # bridge address, so without these ranges trusted, request.client.host is
+      # *Traefik* for every visitor and the entire site shares one bucket.
+      # Safe to be this broad because the service uses `expose`, not `ports`: it
+      # is only reachable through the proxy on the internal network.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12,10.0.0.0/8}
     tmpfs:
       # A tmpfs mount masks whatever ownership the image gave this path, so it
       # has to be handed to the non-root `pdfkit` user (uid 1001) explicitly —

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from fastapi import HTTPException
 from app.config import MAX_OCR_LANGUAGES
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
+from app.services import progress
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import run, sanitise
 
@@ -78,6 +80,61 @@ LANGUAGE_NAMES: dict[str, str] = {
 }
 
 DEFAULT_LANGUAGE = "eng"
+
+# The plugin that turns OCRmyPDF's internal progress into JSON lines on stderr.
+# An absolute path, not a module name: ocrmypdf runs with no cwd of ours, and
+# it accepts either.
+OCR_PLUGIN = Path(__file__).resolve().parents[1] / "tools" / "ocr_progress.py"
+
+# Copied rather than imported from the plugin: importing it here would pull
+# ocrmypdf (and pikepdf, and Pillow's full stack) into the API process, which
+# today never imports any of them. tests/test_ocr_plugin.py asserts the two
+# stay equal.
+MARKER = "pdfkit_progress"
+
+# Which of OCRmyPDF's phases a progress line belongs to, and the fraction of
+# the OCR step each owns. Anything not listed (the optimiser's JBIG2 and JPEG
+# passes, fast and only on some documents) moves nothing.
+#
+# They add up to 0.90, not 1.0, on purpose: _pipeline.py passes
+# progressbar_class=None for the PDF/A conversion tail, so the last stretch of
+# a run reports nothing at all. Stopping short honestly beats sitting at the
+# end of the step for ten seconds.
+_OCR_PHASES: dict[str, tuple[float, float]] = {
+    "Scanning contents": (0.0, 0.15),
+    "OCR": (0.15, 0.75),
+    # What the same page loop is called when the engine is 'none'.
+    "Image processing": (0.15, 0.75),
+}
+
+#: Where OCR sits on the bar when it *is* the whole job.
+WHOLE_JOB = (0.0, 100.0)
+
+
+def _progress_reader(publisher: progress.Publisher, scale: tuple[float, float]):
+    """Turn the plugin's stderr lines into positions on the caller's bar.
+
+    ``scale`` is the (start, width) slice of the current file's 0-100 bar that
+    OCR owns — all of it for the OCR tool, a fraction of it for PDF to Word and
+    PDF to Markdown, where recognition is one step of several.
+    """
+    base, span = scale
+
+    def on_line(stream: str, line: str) -> None:
+        if stream != "stderr" or MARKER not in line:
+            return
+        try:
+            payload = json.loads(line)
+            offset, width = _OCR_PHASES[str(payload["desc"])]
+            total = float(payload["total"] or 0)
+            done = float(payload["done"])
+        except (ValueError, KeyError, TypeError):
+            return
+        if total <= 0:
+            return
+        publisher.percent(base + span * (offset + width * min(1.0, done / total)))
+
+    return on_line
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,19 +218,29 @@ def validate_ocr_mode(mode: str | None, *, default: str) -> str:
 
 
 async def ocr_to_path(
-    source: Path, destination: Path, scratch: Path, languages: list[str]
+    source: Path,
+    destination: Path,
+    scratch: Path,
+    languages: list[str],
+    scale: tuple[float, float] = WHOLE_JOB,
 ) -> Path:
     """Add a text layer to ``source``, writing the result to ``destination``.
 
     The OCR step on its own, so the tools that need a readable document before
     they can do their real job — PDF to Word and PDF to Markdown — get exactly
-    the same behaviour as the OCR tool rather than a second implementation of it.
+    the same behaviour as the OCR tool rather than a second implementation of
+    it. ``scale`` is how much of the caller's progress bar this step owns.
     """
     result = await run(
         [
             "ocrmypdf",
             "-l",
             "+".join(languages),
+            # Reports per-page progress on stderr. --quiet stays: it suppresses
+            # logging, not this, and there is no flag that would make OCRmyPDF
+            # report progress into a pipe. See app/tools/ocr_progress.py.
+            "--plugin",
+            str(OCR_PLUGIN),
             # Pages that already carry text are passed through untouched rather
             # than double-layered, which is what makes this safe on mixed PDFs.
             "--skip-text",
@@ -188,6 +255,7 @@ async def ocr_to_path(
         # Keep OCRmyPDF's own scratch files on the request's tmpfs so they are
         # removed with the batch instead of accumulating in the container.
         env={"TMPDIR": str(scratch)},
+        on_line=_progress_reader(progress.current(), scale),
     )
 
     if result.returncode == EXIT_ENCRYPTED or mentions_password(result.output):
@@ -215,4 +283,11 @@ async def ocr_one(
 async def ocr(batch: UploadBatch, languages: list[str]) -> list[OutputFile]:
     workspace = batch.workspace("out")
     scratch = batch.workspace("ocr-tmp")
-    return [await ocr_one(upload, workspace, scratch, languages) for upload in batch.files]
+    publisher = progress.current()
+
+    outputs: list[OutputFile] = []
+    for index, upload in enumerate(batch.files, start=1):
+        await progress.stop_if_cancelled()
+        publisher.file(index, len(batch.files), upload.original_name, "Reading the pages")
+        outputs.append(await ocr_one(upload, workspace, scratch, languages))
+    return outputs

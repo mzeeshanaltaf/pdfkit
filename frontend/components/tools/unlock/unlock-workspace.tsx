@@ -6,6 +6,7 @@ import { usePasswordPrompt } from "@/components/tool/password-dialog";
 import { ToolShell } from "@/components/tool/tool-shell";
 import type { ToolResult, ToolRunContext } from "@/components/tool/types";
 import { uploadWithPassword, type ApiFileResponse } from "@/lib/api";
+import { withFreshToken } from "@/lib/token";
 import { takeHandedOffFiles } from "@/lib/file-handoff";
 import { zipBlobs } from "@/lib/pdf/zip";
 import { getTool } from "@/lib/tools";
@@ -18,7 +19,13 @@ export default function UnlockWorkspace() {
   const { requestPassword, dismissPrompt, passwordDialog } = usePasswordPrompt();
 
   const process = useCallback(
-    async ({ files, setProgress, setStage, signal }: ToolRunContext): Promise<ToolResult> => {
+    async ({
+      files,
+      setProgress,
+      setStage,
+      setDetail,
+      signal,
+    }: ToolRunContext): Promise<ToolResult> => {
       // One request per file rather than one for the batch: the backend takes a single
       // password per request, and a batch of differently-locked files would fail whole at
       // the first one. Per file, each gets its own prompt and its own second chance.
@@ -26,29 +33,40 @@ export default function UnlockWorkspace() {
 
       try {
         for (const [index, entry] of files.entries()) {
-          const position = files.length === 1 ? "" : ` ${index + 1} of ${files.length}`;
-          setStage(`Uploading file${position}`);
+          // Which file this is belongs on the detail line, not in the stage text —
+          // same place every other backend tool puts it, even though this one works
+          // it out on the client rather than reading it off a progress stream.
+          setDetail(
+            files.length === 1
+              ? entry.name
+              : `File ${index + 1} of ${files.length} — ${entry.name}`,
+          );
+          setStage("Uploading");
           setProgress(Math.round((index / files.length) * 100));
 
-          const result = await uploadWithPassword(
-            "/unlock",
-            entry.file,
-            {},
-            {
-              signal,
-              requestPassword,
-              fallbackName: "unlocked.pdf",
-              onProgress: (percent) => {
-                if (percent >= 100) {
-                  // qpdf is working on this one; the next file's upload flips the bar back.
-                  setProgress(null);
-                  setStage(`Removing the password${position}`);
-                } else {
-                  // Each file owns its slice of the bar, so a five-file run still moves.
-                  setProgress(Math.round(((index + percent / 100) / files.length) * 100));
-                }
+          const result = await withFreshToken((token) =>
+            uploadWithPassword(
+              "/unlock",
+              entry.file,
+              {},
+              {
+                signal,
+                requestPassword,
+                fallbackName: "unlocked.pdf",
+                headers: { Authorization: `Bearer ${token}` },
+                onProgress: (percent) => {
+                  if (percent >= 100) {
+                    // qpdf is working on this one. No progress stream here: one request
+                    // per file is already the granularity a stream would give us, and
+                    // qpdf is milliseconds-scale within a file.
+                    setStage("Removing the password");
+                  } else {
+                    // Each file owns its slice of the bar, so a five-file run still moves.
+                    setProgress(Math.round(((index + percent / 100) / files.length) * 100));
+                  }
+                },
               },
-            },
+            ),
           );
           results.push(result);
         }
@@ -61,6 +79,7 @@ export default function UnlockWorkspace() {
       }
 
       setProgress(null);
+      setDetail(null);
       setStage("Building the ZIP");
       const blob = await zipBlobs(
         results.map((result) => ({ name: result.filename, blob: result.blob })),

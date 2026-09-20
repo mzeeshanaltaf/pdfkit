@@ -16,9 +16,20 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
 
+from app import config
 from app.main import app
+from app.services import auth, progress, ratelimit
 
 ENCRYPTED_PASSWORD = "hunter2"
+
+# The suite runs against a real secret so every request exercises the real auth
+# path, rather than the "no secret configured, let everything through" one.
+TEST_SECRET = "test-secret-not-a-real-one"
+
+# A day, not the production 120 seconds. The client fixture is session-scoped,
+# and a Docker run that includes OCR takes long enough that a two-minute token
+# would expire partway through and fail the second half of the suite.
+TEST_TOKEN_TTL = 86_400
 
 # The words build_gapped_text_pdf() lays out, one Tj each, with no space
 # character anywhere in the content stream.
@@ -34,6 +45,13 @@ requires_ghostscript = pytest.mark.skipif(
 requires_tesseract = pytest.mark.skipif(
     shutil.which("tesseract") is None,
     reason="tesseract is only installed in the backend image",
+)
+# Separate from tesseract: a developer machine can easily have the engine
+# installed system-wide and still have no `ocrmypdf` on PATH, which is a
+# FileNotFoundError from the runner rather than a skip.
+requires_ocrmypdf = pytest.mark.skipif(
+    shutil.which("ocrmypdf") is None,
+    reason="the ocrmypdf command is only on PATH in the backend image",
 )
 requires_poppler = pytest.mark.skipif(
     shutil.which("pdfimages") is None,
@@ -56,9 +74,39 @@ requires_anydoc = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="session")
-def client() -> Iterator[TestClient]:
-    with TestClient(app) as test_client:
+def api_secret() -> Iterator[str]:
+    """Turn auth on for the whole suite.
+
+    Set on the module rather than through ``monkeypatch`` because that fixture
+    is function-scoped; ``app.services.auth`` reads ``config`` attributes at
+    call time precisely so this works.
+    """
+    previous = config.API_TOKEN_SECRET
+    config.API_TOKEN_SECRET = TEST_SECRET
+    yield TEST_SECRET
+    config.API_TOKEN_SECRET = previous
+
+
+@pytest.fixture(scope="session")
+def client(api_secret: str) -> Iterator[TestClient]:
+    token, _ = auth.mint(api_secret, ttl=TEST_TOKEN_TTL)
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def _fresh_limits() -> Iterator[None]:
+    """Every test arrives from the same address, and there are over a hundred.
+
+    Without this the suite rate-limits itself somewhere around test 20. Both
+    stores are process-global by design (see ``app.services.ratelimit``), so
+    clearing them between tests is the isolation.
+    """
+    ratelimit.reset()
+    progress.registry.clear()
+    yield
+    ratelimit.reset()
+    progress.registry.clear()
 
 
 def ink_on_first_page(pdf: bytes) -> int:
