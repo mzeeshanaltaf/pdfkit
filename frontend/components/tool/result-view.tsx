@@ -18,7 +18,7 @@ interface ResultViewProps {
 }
 
 export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
-  const { originalSize, resultSize } = result;
+  const { originalSize, resultSize, fileStats } = result;
   const saved =
     originalSize !== undefined && resultSize !== undefined
       ? percentSmaller(originalSize, resultSize)
@@ -38,6 +38,28 @@ export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
           </p>
         )}
       </div>
+
+      {fileStats && fileStats.length > 1 && (
+        <div className="w-full max-w-lg text-left">
+          <ul className="divide-y divide-border rounded-xl border border-border bg-card">
+            {fileStats.map((stat) => {
+              const fileSaved = percentSmaller(stat.originalSize, stat.resultSize);
+              return (
+                <li
+                  key={stat.name}
+                  className="flex items-center justify-between gap-4 px-4 py-2.5 text-sm"
+                >
+                  <span className="truncate font-medium">{stat.name}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {formatBytes(stat.originalSize)} → {formatBytes(stat.resultSize)}
+                    {fileSaved > 0 ? ` (${fileSaved}% smaller)` : ""}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       <div className="flex flex-col items-center gap-3">
         <Button

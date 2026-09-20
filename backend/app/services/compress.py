@@ -90,11 +90,21 @@ PRESETS: dict[str, Preset] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class FileStat:
+    """Before/after size for one file in the batch, keyed by its original name."""
+
+    name: str
+    original_size: int
+    result_size: int
+
+
 @dataclass(slots=True)
 class CompressionResult:
     outputs: list[OutputFile]
     original_size: int
     result_size: int
+    files: list[FileStat]
 
 
 # How much of one file's progress each step is worth, in order. A *fixed*
@@ -566,4 +576,12 @@ async def compress(batch: UploadBatch, level: str) -> CompressionResult:
         outputs=outputs,
         original_size=sum(upload.size for upload in batch.files),
         result_size=sum(output.path.stat().st_size for output in outputs),
+        files=[
+            FileStat(
+                name=upload.original_name,
+                original_size=upload.size,
+                result_size=output.path.stat().st_size,
+            )
+            for upload, output in zip(batch.files, outputs, strict=True)
+        ],
     )

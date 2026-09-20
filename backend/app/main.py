@@ -38,7 +38,12 @@ app.add_middleware(
     allow_headers=["*"],
     # A cross-origin fetch() can only read headers listed here, and the UI needs
     # the download name and the before/after sizes.
-    expose_headers=["Content-Disposition", "X-Original-Size", "X-Result-Size"],
+    expose_headers=[
+        "Content-Disposition",
+        "X-Original-Size",
+        "X-Result-Size",
+        "X-File-Stats",
+    ],
 )
 
 # Order is deliberate. The coarse limit bounds an unauthenticated flood before

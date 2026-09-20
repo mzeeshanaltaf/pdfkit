@@ -36,12 +36,21 @@ export type ToolStatus = "select" | "configure" | "processing" | "done" | "error
 /** What ToolShell actually stores. "select" vs "configure" is derived from the file list. */
 export type ToolPhase = "idle" | "processing" | "done" | "error";
 
+/** One file's before/after size, used by Compress to show a per-file breakdown. */
+export interface ToolFileStat {
+  name: string;
+  originalSize: number;
+  resultSize: number;
+}
+
 export interface ToolResult {
   blob: Blob;
   filename: string;
   /** Optional size comparison, used by Compress. */
   originalSize?: number;
   resultSize?: number;
+  /** Per-file breakdown for a batch, used by Compress. Absent for a single file. */
+  fileStats?: ToolFileStat[];
   /** Replaces the default "Download" label, e.g. "Download 12 JPG images". */
   downloadLabel?: string;
 }

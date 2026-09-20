@@ -4,12 +4,24 @@ import { useCallback, useState } from "react";
 
 import { numericHeader, runBackendTool } from "@/components/tool/backend-run";
 import { ToolShell } from "@/components/tool/tool-shell";
-import type { ToolResult, ToolRunContext } from "@/components/tool/types";
+import type { ToolFileStat, ToolResult, ToolRunContext } from "@/components/tool/types";
 import { getTool } from "@/lib/tools";
 
 import { CompressOptions, DEFAULT_COMPRESS_LEVEL, type CompressLevel } from "./compress-options";
 
 const tool = getTool("compress");
+
+/** Sent only for a multi-file batch — absent (and safe to no-op) for a single file. */
+function parseFileStats(raw: string | undefined): ToolFileStat[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed as ToolFileStat[];
+  } catch {
+    return undefined;
+  }
+}
 
 export default function CompressWorkspace() {
   const [level, setLevel] = useState<CompressLevel>(DEFAULT_COMPRESS_LEVEL);
@@ -31,6 +43,7 @@ export default function CompressWorkspace() {
         filename,
         originalSize: numericHeader(headers, "x-original-size"),
         resultSize: numericHeader(headers, "x-result-size"),
+        fileStats: parseFileStats(headers["x-file-stats"]),
       };
     },
     [level],
