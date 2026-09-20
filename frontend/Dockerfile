@@ -4,8 +4,11 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# npm install, not ci: the lockfile is committed from Windows dev machines and
+# drops Linux-only optional deps (e.g. @emnapi/*), which npm ci refuses to
+# reconcile on its own. npm install is non-strict and fixes it in-container.
 # Scripts are skipped here because postinstall needs scripts/ from the source tree.
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 
 # ---- builder -------------------------------------------------------------
 FROM node:22-alpine AS builder
