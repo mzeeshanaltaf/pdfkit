@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import { ADMIN_COOKIE_NAME, createSession } from "@/lib/admin/session";
+import { SITE_URL } from "@/lib/constants";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
 /**
@@ -9,6 +10,13 @@ import { checkRateLimit, clientIp } from "@/lib/rate-limit";
  * `app/api/contact/route.ts`, so the login form survives a hydration failure — a
  * "use client" form can render correct HTML and still fail to hydrate silently, and a
  * password field is exactly the wrong place to discover that.
+ *
+ * Every redirect below is built from `SITE_URL`, never from `req.url`. In the standalone
+ * Docker image the server listens on `HOSTNAME=0.0.0.0`, and behind Traefik a Route
+ * Handler's `req.url` can resolve its origin from that bind address rather than the
+ * original `Host` header — unlike `proxy.ts`, which reads the request's `Host` correctly.
+ * A login form with no client-side fallback always takes this redirect path, so it must
+ * not depend on the host Next thinks it's running on.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -77,7 +85,7 @@ export async function POST(req: NextRequest) {
 
   const fail = (error: string, status: number) =>
     isFormPost
-      ? NextResponse.redirect(new URL(`/admin/login?error=${error}`, req.url), 303)
+      ? NextResponse.redirect(new URL(`/admin/login?error=${error}`, SITE_URL), 303)
       : NextResponse.json({ success: false }, { status });
 
   const ip = clientIp(req.headers);
@@ -118,7 +126,7 @@ export async function POST(req: NextRequest) {
 
   const { token, maxAge } = await createSession(expectedUsername);
   const res = isFormPost
-    ? NextResponse.redirect(new URL(redirectTo, req.url), 303)
+    ? NextResponse.redirect(new URL(redirectTo, SITE_URL), 303)
     : NextResponse.json({ success: true });
   res.cookies.set(ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
