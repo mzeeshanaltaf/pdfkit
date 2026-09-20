@@ -5,8 +5,13 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
-    ports:
-      - "3000:3000"
+    # No host port publish here: Coolify's Traefik reaches this over the
+    # internal Docker network via its own labels. Host-published ports would
+    # collide with whatever else already holds that port on a shared VPS (see
+    # the backend service below, which is the one that actually collided).
+    # docker-compose.override.yml adds the :3000 host mapping back for local dev.
+    expose:
+      - "3000"
     environment:
       NODE_ENV: production
       # Contact form. Read at request time in the route handler, so these are runtime
@@ -24,8 +29,13 @@ services:
     build:
       context: ./backend
       target: runtime
-    ports:
-      - "8000:8000"
+    # Publishing 8000 on the host collided with Coolify's own dashboard/API,
+    # which already binds host port 8000 (deploy failure: "port is already
+    # allocated"). Traefik reaches this container over the internal network
+    # instead. docker-compose.override.yml adds the :8000 host mapping for
+    # local dev.
+    expose:
+      - "8000"
     environment:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}

@@ -1,0 +1,12 @@
+# Local-dev-only host port publishing. `docker compose` merges this file
+# automatically alongside docker-compose.yml; Coolify deploys only the base
+# file (docker_compose_location), so production never binds these host ports
+# — see the comments in docker-compose.yml for why that matters on a shared VPS.
+services:
+  frontend:
+    ports:
+      - "3000:3000"
+
+  backend:
+    ports:
+      - "8000:8000"
