@@ -209,15 +209,19 @@ async function fetchPlacementSplit(
   return rows.map((row) => ({ placement: row.placement, runs: Number(row.runs), files: Number(row.files) }));
 }
 
-async function fetchFailures(client: PoolClient, interval: string | null): Promise<FailureRow[]> {
+/** Deliberately not scoped to the top range selector, same reasoning as `fetchRecentRuns`:
+ *  this lives on the "Runs & Failures" tab next to the unbounded Recent runs table, and an
+ *  error visible there must never silently disappear from this list just because the range
+ *  selector (which the Overview/Placement tabs actually use it for) is set to something
+ *  short like 24h. */
+async function fetchFailures(client: PoolClient): Promise<FailureRow[]> {
   const { rows } = await client.query(
     `select tool, coalesce(error_code, '(none)') as error_code, count(*)::int as count
      from pdfkit.tool_runs
-     where outcome = 'error' and ($1::text is null or occurred_at >= now() - $1::interval)
+     where outcome = 'error'
      group by tool, error_code
      order by count desc
      limit 20`,
-    [interval],
   );
   return rows.map((row) => ({ tool: row.tool, errorCode: row.error_code, count: Number(row.count) }));
 }
@@ -355,7 +359,7 @@ export async function getDashboardData(range: StatsRange): Promise<DashboardData
       fetchOverview(client, interval),
       fetchToolBreakdown(client, interval),
       fetchRuntimeSplit(client, interval),
-      fetchFailures(client, interval),
+      fetchFailures(client),
       fetchRecentRuns(client),
       fetchRunsPerDay(client),
       fetchSandboxOverview(client, interval),

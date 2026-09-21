@@ -131,7 +131,7 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="placement">Placement &amp; Sandbox</TabsTrigger>
-            <TabsTrigger value="runs">Runs &amp; failures</TabsTrigger>
+            <TabsTrigger value="runs">Runs &amp; Failures</TabsTrigger>
           </TabsList>
         </div>
 
@@ -214,7 +214,7 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
             <RunsTable rows={recentRuns} />
           </Section>
 
-          <Section title="Failures">
+          <Section title="Failures" description="All-time totals, regardless of the range above.">
             <FailuresTable rows={failures} />
           </Section>
         </TabsContent>
