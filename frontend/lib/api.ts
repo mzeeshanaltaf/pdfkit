@@ -79,6 +79,16 @@ function networkError(): ApiError {
   });
 }
 
+function truncatedDownload(): ApiError {
+  return new ApiError(
+    0,
+    "truncated_download",
+    "The download was cut off partway through. Try again — a long-running conversion "
+      + "occasionally loses its connection before the file finishes sending.",
+    { recoverable: true },
+  );
+}
+
 /**
  * Turns an error response body into an ApiError, whatever shape it came back in.
  *
@@ -219,6 +229,16 @@ export function uploadAndProcess(
       detach();
       const body = request.response as Blob | null;
       if (request.status >= 200 && request.status < 300 && body) {
+        // A long-running batch's response sits on an otherwise-silent connection for
+        // however long the server takes, which has been observed to come back
+        // truncated-but-2xx through this deployment's proxy — the XHR still fires
+        // `onload`, so the only way to catch it is to check what actually arrived
+        // against what the server said it was sending.
+        const declared = Number(request.getResponseHeader("Content-Length"));
+        if (Number.isFinite(declared) && declared > 0 && body.size !== declared) {
+          reject(truncatedDownload());
+          return;
+        }
         resolve({
           blob: body,
           filename: filenameFromDisposition(
