@@ -1,13 +1,55 @@
 # Status
 
-Last updated: 2026-09-21 (Phase 11 part 1 — offload visibility: placement travels with the run)
+Last updated: 2026-09-21 (Phase 11 part 2 — offload visibility: gate logging and /health)
 
 ## Current phase
 
-**Phase 11 part 1 is code-complete and unit-tested, not yet verified live.**
-Plan: `docs/phases/phase-11-offload-visibility-phase1.md`. Built the one
-source of truth for "server or sandbox" (`app/services/placement.py`, a
-`ContextVar` module modelled on `progress.py`) and wired it through:
+**Phase 11 part 2 is code-complete and unit-tested, not yet verified live.**
+Plan: `docs/phases/phase-11-offload-visibility-phase2.md`. The permanent fix
+for the blind spot part 0 chased by hand over SSH: `offload.eligible()` now
+returns `str | None` instead of `bool` — `None` when every gate passes,
+otherwise a reason naming the failing gate and its configured value (e.g.
+`"3 files is under DAYTONA_MIN_FILES=4"`, singular for one file; `disabled`
+reads as `"DAYTONA_ENABLED=false"`). `maybe_offload` logs that reason at INFO
+(`offload skipped for ocr: ...`) instead of silently returning `None`, and
+`_offload` gained a matching INFO on the success path (`offloading 3 file(s)
+of ocr across 2 sandbox(es)`) — previously a working feature logged nothing
+but incidental `remote_job:` relay lines. `/health` gained a `daytona` block
+(`enabled`, `api_key` as a bool never the value, `snapshot`, `operations`,
+`min_files`, `min_bytes`, `max_sandboxes`), alongside the existing
+`sandboxes` counter, all read through `config.X` at call time like everything
+else in this module.
+
+`eligible()` had exactly one caller (`maybe_offload`, inside the same module),
+so the signature change touched nothing else.
+
+Tests: 5 new in `test_offload.py` (`eligible()` is `None` when every gate
+passes; each of the four gates names itself and its configured value,
+parametrized the same way `test_a_failed_gate_never_touches_the_pool` already
+was; the singular "1 file" wording; `maybe_offload` logs the refusal via
+`caplog`; the success path logs both counts), 3 new in `test_health.py` (the
+full `daytona` block with every knob monkeypatched to a distinguishable
+value; the API key coming back `false` when unset — the one field this
+endpoint must never leak the real value of).
+
+**Verified:** `uv run pytest -q` locally — **218 passed, 70 skipped**, same
+skip set as every prior phase (ghostscript, qpdf, opt-in live Daytona tests
+this dev machine lacks). `ruff check` clean on every changed file.
+**Not verified:** `docker compose run --rm --build backend-tests` (the full
+toolchain image) was not run in this environment. Also outstanding, all
+needing a deployed environment per the plan's own verification section:
+`curl .../health | jq .daytona` against production; a single-file OCR upload
+confirming the exact skip log line; the end-to-end run tying this phase to
+part 1's pill (bar monotone across shards, `/health`'s `sandboxes` going
+0 → 2 → 0); and the fallback-honesty check with a bad `DAYTONA_SNAPSHOT`.
+
+### Still true from before this part — Phase 11 parts 0-1, and Phase 10's go-live watch
+
+**Phase 11 part 1 is code-complete and unit-tested, verification still
+pending a deployed environment.** Plan:
+`docs/phases/phase-11-offload-visibility-phase1.md`. Built the one source of
+truth for "server or sandbox" (`app/services/placement.py`, a `ContextVar`
+module modelled on `progress.py`) and wired it through:
 `offload.maybe_offload` marks sandbox once a shard is claimed and reverts to
 server in the `_Abandoned` fallback; `progress.Snapshot`/`Publisher._emit`
 stamp `placement` onto every SSE frame (`Publisher.finish`'s frame too, which
@@ -22,31 +64,6 @@ reads the header itself (it bypasses `runBackendTool`), and a new shared
 `placement-badge.tsx` renders a "secure cloud sandbox" pill on the processing
 and done screens — nothing at all for the ordinary VPS path. No other tool
 workspace needed an edit.
-
-Tests: 2 new in `test_offload.py` (sandbox marked once a shard is claimed;
-reverts to server after a fallback — the test that would catch a lying
-badge), 1 new in `test_progress.py` (`as_event()` carries `placement`,
-`finish()` included), and 4 new in a new `tests/test_placement_headers.py`
-(`X-Processed-On` on single-file and zip responses, one per offloadable
-operation) — a separate file because `test_offload.py` already defines its
-own module-local `client` fixture (a fake Daytona client) that silently
-shadows conftest's `TestClient` fixture of the same name for the whole
-module; the header tests were first written inline there and failed with
-`'function' object has no attribute 'post'` until moved out.
-
-**Verified:** `uv run pytest -q` locally — **208 passed, 70 skipped**, the
-skips being the tools this dev machine lacks (ghostscript, qpdf) plus the
-opt-in live Daytona tests, consistent with every prior phase's local run.
-Frontend `npx tsc --noEmit` and `eslint` on every changed file are clean.
-**Not verified:** Docker Desktop was not running in this environment, so
-`docker compose run --rm --build backend-tests` (the full toolchain image)
-was not executed — worth a quick confirmation next session. Also outstanding
-from the plan's own verification section, both of which need a deployed
-environment: watching the sandbox pill appear live on a real offloaded batch,
-and confirming a bad `DAYTONA_SNAPSHOT` shows no pill and `X-Processed-On:
-server` end to end.
-
-### Still true from before this part — Phase 11 part 0, and Phase 10's go-live watch
 
 **Phase 11 part 0 is done, and the misconfiguration it found is fixed and
 verified live — see that section below.** `DAYTONA_ENABLED` had been flipped

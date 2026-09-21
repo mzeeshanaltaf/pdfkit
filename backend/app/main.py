@@ -127,4 +127,16 @@ async def health(request: Request) -> dict[str, object]:
         # offloading is off, and the fastest way to watch the feature during
         # a rollout without opening the Daytona dashboard.
         "sandboxes": offload.open_sandboxes(),
+        # Daytona's live posture, read through `config.X` at call time like
+        # everything else here — this is the endpoint that answers "is it on,
+        # and what would it take" in one curl instead of an SSH session.
+        "daytona": {
+            "enabled": config.DAYTONA_ENABLED,
+            "api_key": bool(config.DAYTONA_API_KEY),
+            "snapshot": config.DAYTONA_SNAPSHOT,
+            "operations": config.DAYTONA_OPERATIONS,
+            "min_files": config.DAYTONA_MIN_FILES,
+            "min_bytes": config.DAYTONA_MIN_BYTES,
+            "max_sandboxes": config.DAYTONA_MAX_SANDBOXES,
+        },
     }

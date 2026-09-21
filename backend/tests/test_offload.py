@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import time
@@ -362,6 +363,88 @@ async def test_a_failed_gate_never_touches_the_pool(
 
     assert await offload.maybe_offload(operation, batch, {}) is None
     assert pool.provisioned == []
+
+
+def test_eligible_is_none_when_every_gate_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: None
+) -> None:
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+    assert offload.eligible("compress", batch) is None
+
+
+@pytest.mark.parametrize(
+    ("knob", "value", "expected"),
+    [
+        ("DAYTONA_ENABLED", False, "DAYTONA_ENABLED=false"),
+        ("DAYTONA_OPERATIONS", ["word"], "DAYTONA_OPERATIONS=['word']"),
+        ("DAYTONA_MIN_FILES", 5, "is under DAYTONA_MIN_FILES=5"),
+        ("DAYTONA_MIN_BYTES", 500_000_000, "is under DAYTONA_MIN_BYTES=500000000"),
+    ],
+)
+def test_eligible_names_each_failing_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    knob: str,
+    value: object,
+    expected: str,
+) -> None:
+    """Every refusal names the gate that refused and its configured value."""
+    monkeypatch.setattr(config, knob, value)
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    reason = offload.eligible("compress", batch)
+
+    assert reason is not None
+    assert expected in reason
+
+
+def test_eligible_uses_the_singular_for_one_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: None
+) -> None:
+    monkeypatch.setattr(config, "DAYTONA_MIN_FILES", 2)
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    assert offload.eligible("compress", batch) == "1 file is under DAYTONA_MIN_FILES=2"
+
+
+async def test_maybe_offload_logs_the_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(config, "DAYTONA_MIN_FILES", 5)
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    with caplog.at_level(logging.INFO, logger="app.services.offload"):
+        assert await offload.maybe_offload("compress", batch, {}) is None
+
+    assert "offload skipped for compress: 1 file is under DAYTONA_MIN_FILES=5" in caplog.text
+
+
+async def test_the_success_path_logs_file_and_sandbox_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One INFO naming both counts — today a working feature logs nothing else."""
+    output = b"%PDF-1.4 x"
+    use(
+        monkeypatch,
+        ScriptedPool(
+            lines=[("stdout", result_line("a.pdf", "a-compressed.pdf", len(output)))],
+            files={f"{offload.WORK}/out/a-compressed.pdf": output},
+        ),
+    )
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    with caplog.at_level(logging.INFO, logger="app.services.offload"):
+        outputs = await offload.maybe_offload("compress", batch, {})
+
+    assert outputs is not None
+    assert "offloading 1 file(s) of compress across 1 sandbox(es)" in caplog.text
 
 
 async def test_a_saturated_pool_runs_locally(

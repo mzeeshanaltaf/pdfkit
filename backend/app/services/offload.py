@@ -220,19 +220,29 @@ def open_sandboxes() -> int:
 # --- the decision ------------------------------------------------------------
 
 
-def eligible(operation: str, batch: UploadBatch) -> bool:
-    """Whether this batch is worth a sandbox.
+def eligible(operation: str, batch: UploadBatch) -> str | None:
+    """Whether this batch is worth a sandbox — and if not, why.
+
+    ``None`` means every gate passed. Otherwise the return value names the
+    failing gate and its configured value, e.g. ``"3 files is under
+    DAYTONA_MIN_FILES=4"`` — this is what lets :func:`maybe_offload` log
+    something an operator can act on instead of a bare refusal.
 
     Every value is read as ``config.X`` here rather than imported by name, so
     a test that monkeypatches ``config`` actually changes the answer.
     """
     if not config.DAYTONA_ENABLED:
-        return False
+        return "DAYTONA_ENABLED=false"
     if operation not in config.DAYTONA_OPERATIONS:
-        return False
-    if len(batch.files) < config.DAYTONA_MIN_FILES:
-        return False
-    return sum(upload.size for upload in batch.files) >= config.DAYTONA_MIN_BYTES
+        return f"{operation} is not in DAYTONA_OPERATIONS={config.DAYTONA_OPERATIONS}"
+    files = len(batch.files)
+    if files < config.DAYTONA_MIN_FILES:
+        noun = "file" if files == 1 else "files"
+        return f"{files} {noun} is under DAYTONA_MIN_FILES={config.DAYTONA_MIN_FILES}"
+    total_bytes = sum(upload.size for upload in batch.files)
+    if total_bytes < config.DAYTONA_MIN_BYTES:
+        return f"{total_bytes} bytes is under DAYTONA_MIN_BYTES={config.DAYTONA_MIN_BYTES}"
+    return None
 
 
 def pool_factory() -> SandboxPool:
@@ -248,7 +258,9 @@ async def maybe_offload(
     ``None`` is not an error path — it is the ordinary answer whenever
     offloading is not on, not applicable, or not currently possible.
     """
-    if not eligible(operation, batch):
+    refusal = eligible(operation, batch)
+    if refusal is not None:
+        logger.info("offload skipped for %s: %s", operation, refusal)
         return None
 
     slots = _slots()
@@ -317,6 +329,12 @@ async def _offload(
     operation: str, batch: UploadBatch, options: dict[str, Any], shards: int
 ) -> list[OutputFile]:
     """Split the batch across ``shards`` sandboxes and run them all at once."""
+    logger.info(
+        "offloading %d file(s) of %s across %d sandbox(es)",
+        len(batch.files),
+        operation,
+        shards,
+    )
     fan_in = FanIn(len(batch.files))
     # One pool for the whole request: it holds a sandbox per shard, and its
     # per-sandbox session bookkeeping is already keyed by sandbox id.
