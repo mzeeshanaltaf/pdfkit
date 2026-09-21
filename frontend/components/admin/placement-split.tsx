@@ -43,7 +43,11 @@ export function PlacementSplit({ rows }: PlacementSplitProps) {
             </span>
           </li>
         ))}
-        {rows.length === 0 && <li className="text-muted-foreground">No server-side runs yet.</li>}
+        {rows.length === 0 && (
+          <li className="text-muted-foreground">
+            No backend runs have a recorded placement yet.
+          </li>
+        )}
       </ul>
     </div>
   );

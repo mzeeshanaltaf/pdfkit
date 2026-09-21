@@ -20,6 +20,7 @@ import { SandboxUsage } from "@/components/admin/sandbox-usage";
 import { StatTile } from "@/components/admin/stat-tile";
 import { ToolBarList } from "@/components/admin/tool-bar-list";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ADMIN_COOKIE_NAME, verifySession } from "@/lib/admin/session";
 import { statsEnabled } from "@/lib/db";
 import { formatBytes } from "@/lib/format";
@@ -125,79 +126,99 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
         <StatTile label="p95 duration" value={formatDuration(overview.p95DurationMs)} />
       </div>
 
-      <Section title="Runs per day" description="Last 30 calendar days.">
-        <DayChart rows={runsPerDay} />
-      </Section>
-
-      <Section title="Most-used tools">
-        <ToolBarList rows={breakdown} totalRuns={overview.totalRuns} />
-      </Section>
-
-      <Section
-        title="Sandbox usage"
-        description="What offloaded runs cost, reconstructed from each sandbox's own lifetime — not Daytona's Spending dashboard, which lags real consumption by up to 48 hours."
-      >
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatTile label="Sandboxes" value={formatCount(sandboxOverview.sandboxes)} />
-          <StatTile label="Sandbox time" value={formatDuration(sandboxOverview.aliveSeconds * 1000)} />
-          <StatTile label="CPU-hours" value={sandboxOverview.cpuHours.toFixed(2)} />
-          <StatTile label="RAM GB-hours" value={sandboxOverview.ramGbHours.toFixed(2)} />
-          <StatTile label="Disk GB-hours" value={sandboxOverview.diskGbHours.toFixed(2)} />
-          <StatTile label="Est. cost" value={formatUsd(sandboxOverview.estimatedCostUsd)} />
+      <Tabs defaultValue="overview" className="mt-8">
+        <div className="overflow-x-auto">
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="placement">Placement &amp; sandbox</TabsTrigger>
+            <TabsTrigger value="runs">Runs &amp; failures</TabsTrigger>
+          </TabsList>
         </div>
 
-        <h3 className="mt-6 text-sm font-medium text-muted-foreground">By operation</h3>
-        <div className="mt-3">
-          <SandboxUsage rows={sandboxByOperation} />
-        </div>
+        <TabsContent value="overview">
+          <Section title="Runs per day" description="Last 30 calendar days.">
+            <DayChart rows={runsPerDay} />
+          </Section>
 
-        <p className="mt-4 text-xs text-muted-foreground">
-          {daytonaUsage ? (
-            <>
-              Live now: {formatCount(Math.round(daytonaUsage.cpu.used))}/
-              {formatCount(Math.round(daytonaUsage.cpu.quota))} vCPU ·{" "}
-              {formatCount(Math.round(daytonaUsage.ramGb.used))}/
-              {formatCount(Math.round(daytonaUsage.ramGb.quota))} GiB RAM ·{" "}
-              {formatCount(Math.round(daytonaUsage.diskGb.used))}/
-              {formatCount(Math.round(daytonaUsage.diskGb.quota))} GiB disk ({daytonaUsage.region})
-            </>
-          ) : (
-            "Live quota unavailable."
-          )}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Cost is an estimate derived from each sandbox&apos;s own lifetime, not a bill — cross-check
-          against{" "}
-          <a
-            href="https://app.daytona.io/dashboard/billing/spending"
-            target="_blank"
-            rel="noreferrer"
-            className="underline underline-offset-2"
+          <Section title="Most-used tools">
+            <ToolBarList rows={breakdown} totalRuns={overview.totalRuns} />
+          </Section>
+        </TabsContent>
+
+        <TabsContent value="placement">
+          <Section title="Browser vs server" description="The privacy claim, quantified.">
+            <RuntimeSplit rows={runtimeSplit} />
+          </Section>
+
+          <Section
+            title="VPS vs sandbox"
+            description="Of the backend runs above, how much of that work stayed on the VPS versus offloaded to a Daytona sandbox."
           >
-            Daytona&apos;s Spending page
-          </a>
-          , which lags real consumption by up to 48 hours.
-        </p>
-      </Section>
+            <PlacementSplit rows={placementSplit} />
+          </Section>
 
-      <Section title="Browser vs server" description="The privacy claim, quantified.">
-        <RuntimeSplit rows={runtimeSplit} />
-      </Section>
+          <Section
+            title="Sandbox usage"
+            description="What offloaded runs cost, reconstructed from each sandbox's own lifetime — not Daytona's Spending dashboard, which lags real consumption by up to 48 hours."
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <StatTile label="Sandboxes" value={formatCount(sandboxOverview.sandboxes)} />
+              <StatTile
+                label="Sandbox time"
+                value={formatDuration(sandboxOverview.aliveSeconds * 1000)}
+              />
+              <StatTile label="CPU-hours" value={sandboxOverview.cpuHours.toFixed(2)} />
+              <StatTile label="RAM GB-hours" value={sandboxOverview.ramGbHours.toFixed(2)} />
+              <StatTile label="Disk GB-hours" value={sandboxOverview.diskGbHours.toFixed(2)} />
+              <StatTile label="Est. cost" value={formatUsd(sandboxOverview.estimatedCostUsd)} />
+            </div>
 
-      <Section
-        title="VPS vs sandbox"
-        description="Of the work that reaches the server, how much left the VPS."
-      >
-        <PlacementSplit rows={placementSplit} />
-      </Section>
+            <h3 className="mt-6 text-sm font-medium text-muted-foreground">By operation</h3>
+            <div className="mt-3">
+              <SandboxUsage rows={sandboxByOperation} />
+            </div>
 
-      <Section title="Failures">
-        <FailuresTable rows={failures} />
-      </Section>
+            <p className="mt-4 text-xs text-muted-foreground">
+              {daytonaUsage ? (
+                <>
+                  Live now: {formatCount(Math.round(daytonaUsage.cpu.used))}/
+                  {formatCount(Math.round(daytonaUsage.cpu.quota))} vCPU ·{" "}
+                  {formatCount(Math.round(daytonaUsage.ramGb.used))}/
+                  {formatCount(Math.round(daytonaUsage.ramGb.quota))} GiB RAM ·{" "}
+                  {formatCount(Math.round(daytonaUsage.diskGb.used))}/
+                  {formatCount(Math.round(daytonaUsage.diskGb.quota))} GiB disk (
+                  {daytonaUsage.region})
+                </>
+              ) : (
+                "Live quota unavailable."
+              )}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Cost is an estimate derived from each sandbox&apos;s own lifetime, not a bill —
+              cross-check against{" "}
+              <a
+                href="https://app.daytona.io/dashboard/billing/spending"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                Daytona&apos;s Spending page
+              </a>
+              , which lags real consumption by up to 48 hours.
+            </p>
+          </Section>
+        </TabsContent>
 
-      <Section title="Recent runs" description="Last 50, regardless of the range above.">
-        <RunsTable rows={recentRuns} />
-      </Section>
+        <TabsContent value="runs">
+          <Section title="Recent runs" description="Last 50, regardless of the range above.">
+            <RunsTable rows={recentRuns} />
+          </Section>
+
+          <Section title="Failures">
+            <FailuresTable rows={failures} />
+          </Section>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -98,6 +98,19 @@ export function ToolShell({
   const [failedOnPassword, setFailedOnPassword] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const runStartRef = useRef(0);
+  /**
+   * Mirrors `placement` state, read by `recordRun` calls instead of the state variable.
+   * `handleSubmit` is one long-running async closure created at click time; the `placement`
+   * it closed over stays whatever it was at creation (always `null`, set right above the
+   * `process()` call) no matter how many times `setPlacement` fires while it awaits — state
+   * updates never mutate an already-captured closure variable. The ref sidesteps that: it is
+   * mutated in place, so the same running closure sees every update.
+   */
+  const placementRef = useRef<ToolPlacement | null>(null);
+  const setPlacementTracked = useCallback((next: ToolPlacement | null) => {
+    placementRef.current = next;
+    setPlacement(next);
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive, open } = usePdfDropzone({
     tool,
@@ -156,7 +169,7 @@ export function ToolShell({
     setProgress(null);
     setStage("Working on it");
     setDetail(null);
-    setPlacement(null);
+    setPlacementTracked(null);
     setErrorMessage(null);
 
     try {
@@ -165,7 +178,7 @@ export function ToolShell({
         setProgress,
         setStage,
         setDetail,
-        setPlacement,
+        setPlacement: setPlacementTracked,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -179,7 +192,7 @@ export function ToolShell({
         bytesIn,
         bytesOut: output.blob.size,
         durationMs: durationMs(),
-        placement,
+        placement: placementRef.current,
       });
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -200,7 +213,7 @@ export function ToolShell({
           bytesOut: 0,
           durationMs: durationMs(),
           errorCode: error.code,
-          placement,
+          placement: placementRef.current,
         });
         return;
       }
@@ -220,13 +233,13 @@ export function ToolShell({
         bytesOut: 0,
         durationMs: durationMs(),
         errorCode: error instanceof PdfLoadError ? error.kind : undefined,
-        placement,
+        placement: placementRef.current,
       });
     } finally {
       setProgress(null);
       setDetail(null);
     }
-  }, [process, readableFiles, tool.id, placement]);
+  }, [process, readableFiles, tool.id, setPlacementTracked]);
 
   /**
    * Stop the run and go back to the file list.
@@ -257,9 +270,9 @@ export function ToolShell({
       bytesIn: readableFiles.reduce((sum, file) => sum + file.size, 0),
       bytesOut: 0,
       durationMs: Date.now() - runStartRef.current,
-      placement,
+      placement: placementRef.current,
     });
-  }, [readableFiles, tool.id, placement]);
+  }, [readableFiles, tool.id]);
 
   const startOver = useCallback(() => {
     abortRef.current?.abort();

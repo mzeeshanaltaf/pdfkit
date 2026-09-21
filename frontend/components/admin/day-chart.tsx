@@ -18,7 +18,10 @@ export function DayChart({ rows }: DayChartProps) {
           const date = new Date(`${row.day}T00:00:00Z`);
           const label = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
           return (
-            <div key={row.day} className="flex flex-1 flex-col items-center gap-1">
+            <div
+              key={row.day}
+              className="flex h-full flex-1 flex-col items-center justify-end gap-1"
+            >
               <div
                 title={`${label}: ${formatCount(row.runs)} runs`}
                 className="w-full rounded-t-sm bg-brand/70 transition-[height] hover:bg-brand"

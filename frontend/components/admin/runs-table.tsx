@@ -35,6 +35,7 @@ export function RunsTable({ rows }: RunsTableProps) {
           <TableHead>Time</TableHead>
           <TableHead>Tool</TableHead>
           <TableHead>Runtime</TableHead>
+          <TableHead>Placement</TableHead>
           <TableHead>Files</TableHead>
           <TableHead>Size in → out</TableHead>
           <TableHead>Duration</TableHead>
@@ -46,9 +47,15 @@ export function RunsTable({ rows }: RunsTableProps) {
           <TableRow key={`${row.occurredAt}-${index}`}>
             <TableCell className="text-muted-foreground">{formatDateTime(row.occurredAt)}</TableCell>
             <TableCell className="font-medium">{getTool(row.tool).name}</TableCell>
+            <TableCell className="text-muted-foreground">{row.runsIn}</TableCell>
             <TableCell className="text-muted-foreground">
-              {row.runsIn}
-              {row.placement === "sandbox" && <span className="block text-xs">· sandbox</span>}
+              {row.placement === "sandbox" ? (
+                <Badge variant="secondary">Cloud sandbox</Badge>
+              ) : row.placement === "server" ? (
+                <Badge variant="outline">VPS</Badge>
+              ) : (
+                "—"
+              )}
             </TableCell>
             <TableCell>{row.fileCount}</TableCell>
             <TableCell className="text-muted-foreground">
