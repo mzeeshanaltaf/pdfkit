@@ -32,6 +32,8 @@ from fastapi import HTTPException, Request, UploadFile
 
 from app import config
 from app.config import (
+    MAX_BATCH_BYTES,
+    MAX_BATCH_MB,
     MAX_FILES_PER_REQUEST,
     MAX_UPLOAD_BYTES,
     MAX_UPLOAD_MB,
@@ -138,9 +140,10 @@ def _scratch_root() -> Path:
 async def save_uploads(uploads: Sequence[UploadFile]) -> UploadBatch:
     """Stream uploads to a private temp directory, rejecting anything unusable.
 
-    Raises 400 for an empty request, 413 for a file over the cap and 415 for
-    something that is not a PDF. The temp directory is removed before the
-    exception leaves this function, so a rejected request leaves nothing behind.
+    Raises 400 for an empty request, 413 for a file over the per-file cap or
+    the batch over its combined cap, and 415 for something that is not a PDF.
+    The temp directory is removed before the exception leaves this function,
+    so a rejected request leaves nothing behind.
     """
     if not uploads:
         raise HTTPException(status_code=400, detail="no_files")
@@ -149,16 +152,21 @@ async def save_uploads(uploads: Sequence[UploadFile]) -> UploadBatch:
 
     batch = UploadBatch(directory=Path(tempfile.mkdtemp(dir=_scratch_root())))
     inputs = batch.workspace("in")
+    batch_total = 0
     try:
         for index, upload in enumerate(uploads):
-            batch.files.append(await _save_one(upload, inputs, index))
+            saved = await _save_one(upload, inputs, index, batch_total)
+            batch_total += saved.size
+            batch.files.append(saved)
     except BaseException:
         batch.cleanup()
         raise
     return batch
 
 
-async def _save_one(upload: UploadFile, directory: Path, index: int) -> SavedUpload:
+async def _save_one(
+    upload: UploadFile, directory: Path, index: int, batch_total: int
+) -> SavedUpload:
     original_name = sanitise_filename(upload.filename)
     shown = display_name(upload.filename)
     # Prefix with the position so two uploads named the same do not collide.
@@ -173,6 +181,11 @@ async def _save_one(upload: UploadFile, directory: Path, index: int) -> SavedUpl
                 raise HTTPException(
                     status_code=413,
                     detail=f"{shown} is over the {MAX_UPLOAD_MB} MB limit.",
+                )
+            if batch_total + size > MAX_BATCH_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"This batch is over the {MAX_BATCH_MB} MB combined limit.",
                 )
             if len(head) < MAGIC_SEARCH_WINDOW:
                 head += chunk[: MAGIC_SEARCH_WINDOW - len(head)]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.config import MAX_FILES_PER_REQUEST, MAX_UPLOAD_BYTES
+from app.config import MAX_BATCH_MB, MAX_FILES_PER_REQUEST, MAX_UPLOAD_BYTES
 from app.deps import sanitise_filename
 from tests.conftest import upload
 
@@ -43,6 +43,16 @@ def test_rejects_too_many_files(client: TestClient, text_pdf: bytes) -> None:
     response = client.post("/compress", files=files)
     assert response.status_code == 400
     assert response.json()["detail"] == "too_many_files"
+
+
+def test_rejects_a_batch_over_the_combined_cap(client: TestClient) -> None:
+    # Four files, each safely under the per-file cap, whose sum still clears
+    # the combined batch cap.
+    per_file = b"%PDF-1.7\n" + b"\x00" * (MAX_UPLOAD_BYTES - 1024)
+    files = [upload(f"file-{index}.pdf", per_file) for index in range(4)]
+    response = client.post("/compress", files=files, data={"level": "less"})
+    assert response.status_code == 413
+    assert f"{MAX_BATCH_MB} MB" in response.json()["detail"]
 
 
 def test_magic_bytes_are_checked_not_the_extension(client: TestClient) -> None:

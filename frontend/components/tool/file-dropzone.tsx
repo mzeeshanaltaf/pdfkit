@@ -3,7 +3,7 @@
 import { FilePlus2, UploadCloud } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { MAX_UPLOAD_LABEL } from "@/lib/constants";
+import { MAX_BATCH_LABEL, MAX_FILES_PER_BATCH, MAX_UPLOAD_LABEL } from "@/lib/constants";
 import type { Tool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
@@ -65,7 +65,11 @@ export function FileDropzone({ tool, addFiles }: FileDropzoneProps) {
 
         <p className="mt-4 text-xs text-muted-foreground">
           or drop {tool.multiple ? "them" : "it"} here
-          {tool.runsIn === "browser" ? null : `, up to ${MAX_UPLOAD_LABEL} per file`}
+          {tool.runsIn === "browser"
+            ? null
+            : tool.multiple
+              ? `, up to ${MAX_UPLOAD_LABEL} per file (${MAX_FILES_PER_BATCH} files, ${MAX_BATCH_LABEL} per batch)`
+              : `, up to ${MAX_UPLOAD_LABEL} per file`}
         </p>
       </div>
     </div>

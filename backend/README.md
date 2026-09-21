@@ -15,9 +15,9 @@ curl localhost:8000/health
 ## Endpoints
 
 All of them take one or more `files` parts (multipart, PDF only, 50 MB each,
-20 files per request). One input comes back as a single file; several come back
-as a zip. Nothing is stored: each request gets a temp directory that is deleted
-once the response has been sent.
+10 files and 150 MB combined per request). One input comes back as a single
+file; several come back as a zip. Nothing is stored: each request gets a temp
+directory that is deleted once the response has been sent.
 
 | Endpoint | Fields | Returns |
 |---|---|---|
@@ -36,6 +36,7 @@ Errors are always `{"detail": "..."}`. The ones the UI is expected to branch on:
 | Status | `detail` | Meaning |
 |---|---|---|
 | 413 | `<name> is over the 50 MB limit.` | One file too large |
+| 413 | `This batch is over the 150 MB combined limit.` | Batch total too large |
 | 415 | `<name> is not a PDF file.` | Failed the `%PDF-` magic-byte check |
 | 422 | `password_required` | Encrypted input, no usable password given |
 | 422 | `wrong_password` | A password was supplied and qpdf rejected it |

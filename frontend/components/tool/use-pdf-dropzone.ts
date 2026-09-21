@@ -30,9 +30,15 @@ export function usePdfDropzone({ tool, addFiles, noClick = false }: Options) {
   const onDrop = useCallback(
     (accepted: File[], rejections: FileRejection[]) => {
       const messages = rejections.map((rejection) => describeRejection(rejection, tool));
-      if (accepted.length > 0) messages.push(...addFiles(accepted).rejected);
+      let warning: string | undefined;
+      if (accepted.length > 0) {
+        const result = addFiles(accepted);
+        messages.push(...result.rejected);
+        warning = result.warning;
+      }
       // Three is enough to explain what happened without burying the screen in toasts.
       for (const message of messages.slice(0, 3)) toast.error(message);
+      if (warning) toast.warning(warning);
     },
     [addFiles, tool],
   );

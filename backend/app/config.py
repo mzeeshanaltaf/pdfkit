@@ -12,7 +12,14 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 # Ceiling on how many files one request may carry, so a single caller cannot
 # occupy a worker for MAX_FILES_PER_REQUEST * the per-file timeout.
-MAX_FILES_PER_REQUEST = int(os.getenv("MAX_FILES_PER_REQUEST", "20"))
+MAX_FILES_PER_REQUEST = int(os.getenv("MAX_FILES_PER_REQUEST", "10"))
+
+# Ceiling on the combined size of one batch, independent of the per-file cap
+# above: without this, a caller could still send MAX_FILES_PER_REQUEST files
+# at MAX_UPLOAD_MB each and land far past what the per-file cap was meant to
+# bound.
+MAX_BATCH_MB = int(os.getenv("MAX_BATCH_MB", "150"))
+MAX_BATCH_BYTES = MAX_BATCH_MB * 1024 * 1024
 
 # How many external tool subprocesses (ghostscript, qpdf, ocrmypdf) may run at once.
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))

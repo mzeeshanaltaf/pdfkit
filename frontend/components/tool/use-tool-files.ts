@@ -1,8 +1,16 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from "@/lib/constants";
+import {
+  BROWSER_SOFT_BATCH_BYTES,
+  BROWSER_SOFT_BATCH_LABEL,
+  MAX_BATCH_BYTES,
+  MAX_BATCH_LABEL,
+  MAX_FILES_PER_BATCH,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
+} from "@/lib/constants";
 import { inspectPdf, PdfLoadError, pdfErrorMessage, releasePdfJsDocument } from "@/lib/pdf/load";
 import { clearThumbnailCache, renderThumbnail } from "@/lib/pdf/thumbnails";
 import type { Tool } from "@/lib/tools";
@@ -15,6 +23,8 @@ export interface AddFilesResult {
   added: number;
   /** One message per rejected file, ready to show in a toast. */
   rejected: string[];
+  /** A one-time, non-blocking nudge — e.g. a browser batch getting large. */
+  warning?: string;
 }
 
 function isPdf(file: File): boolean {
@@ -39,6 +49,8 @@ export interface ToolFilesApi {
  */
 export function useToolFiles(tool: Tool): ToolFilesApi {
   const [files, setFiles] = useState<ToolFile[]>([]);
+  // Fires once per workspace so the browser-batch nudge does not repeat on every drop.
+  const warnedRef = useRef(false);
 
   const patch = useCallback((id: string, changes: Partial<ToolFile>) => {
     setFiles((current) =>
@@ -65,8 +77,12 @@ export function useToolFiles(tool: Tool): ToolFilesApi {
     (incoming: File[]): AddFilesResult => {
       const rejected: string[] = [];
       const accepted: ToolFile[] = [];
-      // Backend tools are the only ones bound by the upload cap; browser tools never post.
+      // Backend/hybrid tools are the only ones bound by the batch caps; browser tools
+      // never post, so there is no server cost or timeout to protect.
       const capped = tool.runsIn !== "browser";
+
+      let count = tool.multiple ? files.length : 0;
+      let totalBytes = tool.multiple ? files.reduce((sum, entry) => sum + entry.size, 0) : 0;
 
       for (const file of incoming) {
         if (!isPdf(file)) {
@@ -81,6 +97,19 @@ export function useToolFiles(tool: Tool): ToolFilesApi {
           rejected.push(`${tool.name} takes one file at a time.`);
           continue;
         }
+        if (capped && count + 1 > MAX_FILES_PER_BATCH) {
+          rejected.push(`${file.name} was skipped — a batch is limited to ${MAX_FILES_PER_BATCH} files.`);
+          continue;
+        }
+        if (capped && totalBytes + file.size > MAX_BATCH_BYTES) {
+          rejected.push(
+            `${file.name} was skipped — this batch is over the ${MAX_BATCH_LABEL} combined limit.`,
+          );
+          continue;
+        }
+
+        count += 1;
+        totalBytes += file.size;
         accepted.push({
           id: crypto.randomUUID(),
           file,
@@ -91,6 +120,12 @@ export function useToolFiles(tool: Tool): ToolFilesApi {
           rotation: 0,
           error: null,
         });
+      }
+
+      let warning: string | undefined;
+      if (!capped && !warnedRef.current && totalBytes > BROWSER_SOFT_BATCH_BYTES) {
+        warnedRef.current = true;
+        warning = `That's over ${BROWSER_SOFT_BATCH_LABEL} in one batch — very large batches can slow down or crash your browser tab, depending on your device.`;
       }
 
       if (accepted.length > 0) {
@@ -106,9 +141,9 @@ export function useToolFiles(tool: Tool): ToolFilesApi {
         for (const entry of accepted) void hydrate(entry);
       }
 
-      return { added: accepted.length, rejected };
+      return { added: accepted.length, rejected, warning };
     },
-    [hydrate, tool],
+    [files, hydrate, tool],
   );
 
   const removeFile = useCallback((id: string) => {
@@ -163,6 +198,7 @@ export function useToolFiles(tool: Tool): ToolFilesApi {
   }, []);
 
   const clearFiles = useCallback(() => {
+    warnedRef.current = false;
     setFiles((current) => {
       for (const entry of current) {
         clearThumbnailCache(entry.id);
