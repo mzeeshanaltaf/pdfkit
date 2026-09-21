@@ -18,6 +18,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const OUTCOMES = new Set(["done", "error", "cancelled"]);
+const PLACEMENTS = new Set(["server", "sandbox"]);
 
 function clampInt(value: unknown, max: number): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0;
@@ -67,12 +68,16 @@ export async function POST(req: NextRequest) {
     const bytesOut = clampInt(body.bytesOut, 500 * 1024 * 1024);
     const durationMs = clampInt(body.durationMs, 30 * 60 * 1000);
     const errorCode = typeof body.errorCode === "string" ? body.errorCode.slice(0, 64) : null;
+    // Anything but the two known literals stores null rather than being rejected — browser-side
+    // tools send nothing at all, and that must keep working unchanged.
+    const placement =
+      typeof body.placement === "string" && PLACEMENTS.has(body.placement) ? body.placement : null;
 
     await withDb(async (client) => {
       await client.query(
         `insert into pdfkit.tool_runs
-           (tool, runs_in, outcome, file_count, page_count, bytes_in, bytes_out, duration_ms, error_code, visitor)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+           (tool, runs_in, outcome, file_count, page_count, bytes_in, bytes_out, duration_ms, error_code, visitor, placement)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           tool.id,
           tool.runsIn,
@@ -84,6 +89,7 @@ export async function POST(req: NextRequest) {
           durationMs,
           errorCode,
           visitorHash(ip),
+          placement,
         ],
       );
 

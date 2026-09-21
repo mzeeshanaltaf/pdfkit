@@ -46,7 +46,10 @@ export function RunsTable({ rows }: RunsTableProps) {
           <TableRow key={`${row.occurredAt}-${index}`}>
             <TableCell className="text-muted-foreground">{formatDateTime(row.occurredAt)}</TableCell>
             <TableCell className="font-medium">{getTool(row.tool).name}</TableCell>
-            <TableCell className="text-muted-foreground">{row.runsIn}</TableCell>
+            <TableCell className="text-muted-foreground">
+              {row.runsIn}
+              {row.placement === "sandbox" && <span className="block text-xs">· sandbox</span>}
+            </TableCell>
             <TableCell>{row.fileCount}</TableCell>
             <TableCell className="text-muted-foreground">
               {formatBytes(row.bytesIn)} → {row.bytesOut > 0 ? formatBytes(row.bytesOut) : "—"}

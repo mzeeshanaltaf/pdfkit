@@ -57,6 +57,14 @@ export interface RuntimeSplitRow {
   files: number;
 }
 
+export type Placement = "server" | "sandbox";
+
+export interface PlacementSplitRow {
+  placement: Placement;
+  runs: number;
+  files: number;
+}
+
 export interface FailureRow {
   tool: ToolId;
   errorCode: string;
@@ -73,6 +81,7 @@ export interface RecentRunRow {
   bytesOut: number;
   durationMs: number | null;
   errorCode: string | null;
+  placement: Placement | null;
 }
 
 export interface RunsPerDayRow {
@@ -107,6 +116,7 @@ export interface DashboardData {
   runsPerDay: RunsPerDayRow[];
   sandboxOverview: SandboxOverview;
   sandboxByOperation: SandboxOperationRow[];
+  placementSplit: PlacementSplitRow[];
 }
 
 async function fetchOverview(client: PoolClient, interval: string | null): Promise<DashboardOverview> {
@@ -180,6 +190,25 @@ async function fetchRuntimeSplit(client: PoolClient, interval: string | null): P
   return rows.map((row) => ({ runsIn: row.runs_in, runs: Number(row.runs), files: Number(row.files) }));
 }
 
+/** Filtered to `placement is not null` — the split is about server work only, so a browser-side
+ *  run (which stores `null`) is excluded rather than counted as a third bucket. */
+async function fetchPlacementSplit(
+  client: PoolClient,
+  interval: string | null,
+): Promise<PlacementSplitRow[]> {
+  const { rows } = await client.query(
+    `select placement,
+       count(*)::int as runs,
+       coalesce(sum(file_count), 0)::bigint as files
+     from pdfkit.tool_runs
+     where placement is not null and ($1::text is null or occurred_at >= now() - $1::interval)
+     group by placement
+     order by runs desc`,
+    [interval],
+  );
+  return rows.map((row) => ({ placement: row.placement, runs: Number(row.runs), files: Number(row.files) }));
+}
+
 async function fetchFailures(client: PoolClient, interval: string | null): Promise<FailureRow[]> {
   const { rows } = await client.query(
     `select tool, coalesce(error_code, '(none)') as error_code, count(*)::int as count
@@ -195,7 +224,7 @@ async function fetchFailures(client: PoolClient, interval: string | null): Promi
 
 async function fetchRecentRuns(client: PoolClient): Promise<RecentRunRow[]> {
   const { rows } = await client.query(
-    `select occurred_at, tool, runs_in, outcome, file_count, bytes_in, bytes_out, duration_ms, error_code
+    `select occurred_at, tool, runs_in, outcome, file_count, bytes_in, bytes_out, duration_ms, error_code, placement
      from pdfkit.tool_runs
      order by occurred_at desc
      limit 50`,
@@ -210,6 +239,7 @@ async function fetchRecentRuns(client: PoolClient): Promise<RecentRunRow[]> {
     bytesOut: Number(row.bytes_out),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     errorCode: row.error_code,
+    placement: row.placement,
   }));
 }
 
@@ -320,6 +350,7 @@ export async function getDashboardData(range: StatsRange): Promise<DashboardData
       runsPerDay,
       sandboxOverview,
       sandboxByOperation,
+      placementSplit,
     ] = await Promise.all([
       fetchOverview(client, interval),
       fetchToolBreakdown(client, interval),
@@ -329,6 +360,7 @@ export async function getDashboardData(range: StatsRange): Promise<DashboardData
       fetchRunsPerDay(client),
       fetchSandboxOverview(client, interval),
       fetchSandboxByOperation(client, interval),
+      fetchPlacementSplit(client, interval),
     ]);
     return {
       overview,
@@ -339,6 +371,7 @@ export async function getDashboardData(range: StatsRange): Promise<DashboardData
       runsPerDay,
       sandboxOverview,
       sandboxByOperation,
+      placementSplit,
     };
   });
 }

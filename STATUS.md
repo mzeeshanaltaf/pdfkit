@@ -1,8 +1,53 @@
 # Status
 
-Last updated: 2026-09-21 (Phase 11 part 3 — offload visibility: sandbox telemetry)
+Last updated: 2026-09-21 (Phase 11 part 4 — offload visibility: placement in the admin dashboard)
 
 ## Current phase
+
+**Phase 11 part 4 is code-complete, type-checked, linted and built clean, not yet
+verified live.** Plan: `docs/phases/phase-11-offload-visibility-phase4.md`. Extends
+the admin dashboard's "Browser vs server" split so it doesn't stop at "server" —
+adds a VPS-vs-sandbox split of server-side runs, and surfaces placement on the
+recent-runs table.
+
+**`RunEvent`** (`frontend/lib/stats/record.ts`) gained
+`placement?: "server" | "sandbox" | null`. `ToolShell` passes its existing `placement`
+state (from Phase 1) at all four `recordRun` call sites in
+`frontend/components/tool/tool-shell.tsx` — done, the two error paths, and cancelled —
+and `placement` was added to both `useCallback` dependency arrays it now reads from,
+since the state was already in closure scope but not yet a declared dependency.
+**`app/api/stats/event/route.ts`** validates the incoming value against the two
+literals; anything else — including nothing at all, which is what every browser-side
+tool sends — stores `null` rather than being rejected, so those six tools keep working
+unchanged.
+
+**`queries.ts`** gained `fetchPlacementSplit`, a near-copy of `fetchRuntimeSplit`
+filtered to `placement is not null` (the split is about server work only), wired into
+the `Promise.all` in `getDashboardData` and the `DashboardData` shape.
+**`fetchRecentRuns`** added `placement` to its select and its row mapping.
+**`frontend/components/admin/placement-split.tsx`** is a direct sibling of
+`runtime-split.tsx` — same stacked bar and legend, labelled **"On the VPS"** /
+**"In a Daytona sandbox"**. The admin page gained a **"VPS vs sandbox"** section
+(*"Of the work that reaches the server, how much left the VPS."*) directly below
+"Browser vs server". **`runs-table.tsx`** folds placement into the existing Runtime
+cell as a subtle second line (`· sandbox`) rather than an eighth column, per the
+plan — the table already needs horizontal scroll, and a column empty on every
+browser-side row would earn its width poorly.
+
+**Verified in this environment:** `npx tsc --noEmit`, `npx eslint .` and
+`npm run build` all clean (29 routes, same set as Phase 11 part 3 — no new route).
+**No frontend test framework exists in this project** (same finding as part 3), so
+the plan's two testing items — an invalid `placement` storing `null` rather than
+being rejected, and `fetchPlacementSplit` excluding `placement is null` rows — are
+manual-verification items, consistent with the rest of this project's frontend work.
+**Not verified in this environment** (needs a deployed environment with real
+offloaded traffic): re-running the OCR batches from Phases 1-3 (one offloaded, one
+forced to fall back via a bad `DAYTONA_SNAPSHOT`) and confirming both land correctly
+split in the dashboard; the recent-runs table actually showing `· sandbox` for an
+offloaded run and nothing extra for a local one; and confirming browser-side tool
+runs still show up in "Browser vs server" with no placement noise.
+
+### Still true from before this part — Phase 11 part 3, and everything before it
 
 **Phase 11 part 3 is code-complete and unit-tested, not yet verified live.**
 Plan: `docs/phases/phase-11-offload-visibility-phase3.md`. Records PDFKit's own

@@ -12,6 +12,7 @@ import {
   formatUsd,
 } from "@/components/admin/format";
 import { NotConfiguredPanel } from "@/components/admin/not-configured-panel";
+import { PlacementSplit } from "@/components/admin/placement-split";
 import { RangeSelector } from "@/components/admin/range-selector";
 import { RuntimeSplit } from "@/components/admin/runtime-split";
 import { RunsTable } from "@/components/admin/runs-table";
@@ -92,6 +93,7 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
     runsPerDay,
     sandboxOverview,
     sandboxByOperation,
+    placementSplit,
   } = data;
   const breakdown = toolBreakdownWithZeros(toolBreakdown);
   const daytonaUsage = await fetchDaytonaUsage();
@@ -180,6 +182,13 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
 
       <Section title="Browser vs server" description="The privacy claim, quantified.">
         <RuntimeSplit rows={runtimeSplit} />
+      </Section>
+
+      <Section
+        title="VPS vs sandbox"
+        description="Of the work that reaches the server, how much left the VPS."
+      >
+        <PlacementSplit rows={placementSplit} />
       </Section>
 
       <Section title="Failures">

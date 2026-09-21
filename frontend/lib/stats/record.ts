@@ -10,6 +10,9 @@ export interface RunEvent {
   bytesOut: number;
   durationMs: number;
   errorCode?: string | null;
+  /** Where a backend run executed. `null`/omitted for browser-side tools — the VPS-vs-sandbox
+   *  split is about server work only. */
+  placement?: "server" | "sandbox" | null;
 }
 
 /**

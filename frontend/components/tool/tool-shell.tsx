@@ -179,6 +179,7 @@ export function ToolShell({
         bytesIn,
         bytesOut: output.blob.size,
         durationMs: durationMs(),
+        placement,
       });
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -199,6 +200,7 @@ export function ToolShell({
           bytesOut: 0,
           durationMs: durationMs(),
           errorCode: error.code,
+          placement,
         });
         return;
       }
@@ -218,12 +220,13 @@ export function ToolShell({
         bytesOut: 0,
         durationMs: durationMs(),
         errorCode: error instanceof PdfLoadError ? error.kind : undefined,
+        placement,
       });
     } finally {
       setProgress(null);
       setDetail(null);
     }
-  }, [process, readableFiles, tool.id]);
+  }, [process, readableFiles, tool.id, placement]);
 
   /**
    * Stop the run and go back to the file list.
@@ -254,8 +257,9 @@ export function ToolShell({
       bytesIn: readableFiles.reduce((sum, file) => sum + file.size, 0),
       bytesOut: 0,
       durationMs: Date.now() - runStartRef.current,
+      placement,
     });
-  }, [readableFiles, tool.id]);
+  }, [readableFiles, tool.id, placement]);
 
   const startOver = useCallback(() => {
     abortRef.current?.abort();
