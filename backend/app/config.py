@@ -111,3 +111,77 @@ RATE_LIMIT_PROGRESS = (
 # How many client addresses the limiter remembers. LRU-evicted, so the worst a
 # flood of unique addresses can do is forget the oldest legitimate one.
 RATE_LIMIT_MAX_CLIENTS = int(os.getenv("RATE_LIMIT_MAX_CLIENTS", "4096"))
+
+# --- Daytona offload ---------------------------------------------------------
+#
+# Moving the CPU-heavy operations into a per-request sandbox, so a 2 vCPU VPS
+# shared with 18 other apps is not the thing grinding through a 50-page scan.
+# Off by default: unset, every one of these values is inert and the service
+# behaves exactly as it did before the feature existed.
+#
+# Like `auth` and `ratelimit`, everything here is read as `config.X` inside the
+# function that uses it — `from app.config import X` binds a copy at import and
+# makes `monkeypatch` silently useless in tests.
+DAYTONA_ENABLED = os.getenv("DAYTONA_ENABLED", "false").lower() == "true"
+DAYTONA_API_KEY = os.getenv("DAYTONA_API_KEY", "")
+DAYTONA_API_URL = os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api")
+DAYTONA_TARGET = os.getenv("DAYTONA_TARGET", "eu")
+DAYTONA_SNAPSHOT = os.getenv("DAYTONA_SNAPSHOT", "pdfkit-toolchain")
+
+# Which operations may be offloaded. All four have an offload head; naming one
+# that does not would be a silent no-op rather than an error, which is why this
+# list only ever names what actually works. Written in compute-per-byte order —
+# OCR's remote core measured 2.62x a VPS core, Word and Markdown inherit that
+# whenever their OCR sub-step fires, and Compress's win is VPS-CPU protection
+# on a big batch more than raw per-file speed. The order itself is cosmetic:
+# `offload.eligible` only ever tests membership.
+DAYTONA_OPERATIONS = _parse_origins(
+    os.getenv("DAYTONA_OPERATIONS", "ocr,word,markdown,compress")
+)
+
+# The most sandboxes this process may have alive at once — one permit is one
+# sandbox, not one request. It is therefore also the most shards a single
+# batch is split into (`offload._split`), so a large batch can legitimately
+# take the whole ceiling and leave the next request to run on the VPS.
+DAYTONA_MAX_SANDBOXES = int(os.getenv("DAYTONA_MAX_SANDBOXES", "2"))
+
+# Sizing for the *snapshot build* (backend/scripts/build_snapshot.py), not for
+# any per-request create: Daytona rejects cpu/memory/disk on POST /sandbox when
+# the sandbox comes from a snapshot ("Cannot specify Sandbox resources when
+# using a snapshot"), because a snapshot's resources are fixed when it is built.
+DAYTONA_SANDBOX_CPU = int(os.getenv("DAYTONA_SANDBOX_CPU", "4"))
+DAYTONA_SANDBOX_MEMORY_GB = int(os.getenv("DAYTONA_SANDBOX_MEMORY_GB", "4"))
+DAYTONA_SANDBOX_DISK_GB = int(os.getenv("DAYTONA_SANDBOX_DISK_GB", "10"))
+
+# What makes a batch worth the round trip. The file count and the operation do
+# the real gating: the measured VPS-to-Daytona link is ~60 MB/s, so a full
+# 50 MB file costs about 1.5 s of transfer against ~1 s of lifecycle.
+DAYTONA_MIN_FILES = int(os.getenv("DAYTONA_MIN_FILES", "2"))
+# A cheap floor, not an economic gate — kept so a single tiny file never pays
+# provisioning latency, not because transfer cost is the risk.
+DAYTONA_MIN_BYTES = int(os.getenv("DAYTONA_MIN_BYTES", "5242880"))
+
+DAYTONA_PROVISION_TIMEOUT_SECONDS = int(
+    os.getenv("DAYTONA_PROVISION_TIMEOUT_SECONDS", "150")
+)
+DAYTONA_OVERHEAD_SECONDS = int(os.getenv("DAYTONA_OVERHEAD_SECONDS", "90"))
+
+# Belt and braces against a leaked sandbox: it stops itself after this long
+# idle, and disappears entirely at the TTL, even if the VPS died mid-request
+# and never got to delete it.
+DAYTONA_AUTO_STOP_MINUTES = int(os.getenv("DAYTONA_AUTO_STOP_MINUTES", "5"))
+DAYTONA_TTL_MINUTES = int(os.getenv("DAYTONA_TTL_MINUTES", "30"))
+
+# With this false, a Daytona failure is a hard error rather than a silent local
+# retry — useful during rollout for telling "Daytona broke" apart from "the
+# document was bad", which a successful fallback would hide.
+DAYTONA_FALLBACK_LOCAL = os.getenv("DAYTONA_FALLBACK_LOCAL", "true").lower() == "true"
+
+
+def remote_timeout_for(operation: str) -> int:
+    """Wall-clock budget for one offloaded batch.
+
+    The same budget the operation gets locally, plus room for the sandbox
+    lifecycle and the transfer either side of it.
+    """
+    return timeout_for(operation) + DAYTONA_OVERHEAD_SECONDS

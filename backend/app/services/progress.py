@@ -292,6 +292,34 @@ class Publisher:
         self._percent = self._monotonic(self._overall(within_file))
         self._emit(RUNNING)
 
+    def batch(
+        self, *, done: float, total: int, index: int, name: str, step: str
+    ) -> None:
+        """Set an already-computed batch fraction directly, bypassing ``_overall``.
+
+        For progress that was folded somewhere else — inside a sandbox, by a
+        :mod:`app.tools.remote_job` that ran the same services against the same
+        files and published through the same :class:`Publisher` code. Its frames
+        already carry a whole-batch percentage; pushing that back through
+        ``file``/``step``/``percent`` would fold it a second time against this
+        process's own ``_index``/``_total`` and produce a number that is simply
+        wrong.
+
+        ``done`` and ``total`` are in whole files — ``done=2.4`` of ``total=5``
+        is 48%. ``index``, ``name`` and ``step`` only drive the detail line, and
+        do not have to be in lockstep with that arithmetic: that is what lets
+        one relayed shard and a fold across several share this one method.
+
+        Still monotonic, for the same reason every other mover is.
+        """
+        self._index = index
+        self._total = total
+        self._name = name
+        self._step = step
+        if total > 0:
+            self._percent = self._monotonic(round(done / total * 100, 1))
+        self._emit(RUNNING)
+
     def _monotonic(self, candidate: float | None) -> float | None:
         # A bar that goes backwards reads as broken, and the weighted cursors in
         # `compress` can legitimately produce a lower estimate once a step turns

@@ -1,8 +1,49 @@
 # Status
 
-Last updated: 2026-09-20 (Phase 9 — admin dashboard, built locally, not yet deployed)
+Last updated: 2026-09-21 (Phase 10 part 5 — orphan sweep, CI snapshot builds, go-live)
 
 ## Current phase
+
+**Phase 10 part 5 is code-complete and verified live. The feature is shipped
+dark: `DAYTONA_ENABLED` is still `false` in Coolify, and flipping it on is now
+a one-variable change with nothing else outstanding.** The suite is **270
+passed, 1 skipped** with no `DAYTONA_*` env vars set.
+
+What this part added: a best-effort **orphan sweep** on startup (verified by
+actually `SIGKILL`ing a backend mid-batch and watching the next boot clean up
+after it), a **content-hashed CI snapshot pipeline**
+(`.github/workflows/snapshot.yml`), a **snapshot-reactivation retry**, a
+`sandboxes` counter on `/health`, and the docs the feature had none of.
+
+**It also overturned part 4's headline finding.** Part 4 measured Compress as
+a wall-clock *loss* with a break-even around 77 files. Re-measured from the
+VPS on the real documents in `PDFKit Samples/`, Compress is **1.73x faster
+offloaded** and leaves the VPS **83-98% idle** where a local run pegs both
+cores for three minutes. Part 4's number was an artifact of its synthetic
+one-photo-page corpus, exactly as its own caveat warned. **`compress` stays in
+`DAYTONA_OPERATIONS`.** See "Compress, re-measured" below.
+
+Parts 0-4 are done and written up below.
+
+### The one thing left on Phase 10
+
+**The go-live watch (part 5 §4).** The code is deployed but the flag is off, so
+nothing is running in a sandbox yet. To start:
+
+1. In Coolify, on the PDFKit resource: set `DAYTONA_API_KEY`, set
+   `DAYTONA_SNAPSHOT=pdfkit-toolchain-04701fea2e5e` (the CI-named snapshot,
+   already built and verified on the account), then `DAYTONA_ENABLED=true`.
+   Leave every other `DAYTONA_*` at its default. Redeploy.
+2. Watch `/health`'s `sandboxes` and `jobs`, and Hostinger CPU, across a few
+   days of real traffic touching all four operations.
+3. Anything wrong: `DAYTONA_ENABLED=false` and redeploy. One variable, no code
+   change, and the local path it falls back to has been correct since Phase 0.
+4. Once stable, revisit `DAYTONA_MIN_FILES` / `DAYTONA_MIN_BYTES` against the
+   batch sizes real users actually send. The 5 MiB default is still the
+   arbitrary number part 2 called it.
+
+A **browser pass** is also still open from part 4 — Compress's done screen and
+the SSE bar during a sharded batch, both of which need the flag on.
 
 **Phase 9 (admin dashboard) is built and verified locally, not yet deployed.** PDFKit
 itself is live at [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API at
@@ -11,6 +52,968 @@ itself is live at [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API 
 
 Phase 8 shipped on 2026-09-20. The only thing left on it is a browser pass — see
 "Left to do" at the end of the Phase 8 section.
+
+## Phase 10 part 5 — orphan sweep, CI snapshot builds, go-live (2026-09-21)
+
+Plan: `docs/phases/phase-10-daytona-sandbox-offloading-phase5.md`. Everything
+here is either startup-time or build-time; the request path is untouched apart
+from two lines in `_DaytonaPool.provision` and a counter in `_run_shard`.
+
+### 1. The orphan sweep — and `list()` really does work now
+
+Parts 0-4 relied on three layers for teardown: the per-shard `try/finally`,
+`ephemeral=True`, and `auto_stop_interval` + `ttl_minutes`. Real guarantees,
+but all three live inside the process — and a Coolify redeploy `SIGKILL`s
+uvicorn, which skips every `finally` there is. `offload.sweep_orphans()` is
+the fourth layer: on startup, list everything carrying `{"app": "pdfkit"}` and
+delete it. A fresh process owns nothing, so anything alive under that label
+belongs to a process that is gone.
+
+**Part 2 §0 flagged `list()` as unverified** — the previously-pinned SDK
+`0.113.1` called a removed `/sandbox/paginated` endpoint and raised, and the
+plan said to skip the sweep entirely if that was still true. **It is not:**
+`daytona==0.214.0`'s `list()` works against the live API, and its
+`ListSandboxesQuery(labels=...)` filter works too, which is what keeps the
+sweep from ever touching a sandbox some other tool on the account owns. The
+sweep ships.
+
+It is best-effort by contract: everything is caught, and the log says which
+way it went — `orphan sweep: deleted N` or `orphan sweep skipped (<error>);
+relying on ephemeral + auto-stop + the N-minute TTL`. An operator should never
+have to guess whether it ran. It is also bounded (`SWEEP_TIMEOUT_SECONDS = 30`)
+so a hanging delete cannot hold startup open, and a single stuck sandbox does
+not cost its siblings theirs.
+
+**Verified live, twice over.** First against a hand-made orphan: 6/6, with the
+sweep adding 0.7 s to startup and finding nothing on a clean account. Then the
+real thing — a genuine offloaded OCR batch `SIGKILL`ed mid-flight:
+
+    ORPHANED AFTER SIGKILL: ['06c11f8e-060e-4d8b-9eb0-c34af7132455']
+    ... boot the backend, as a Coolify redeploy would ...
+    found 1 sandbox(es) left over from a previous process: 06c11f8e-...
+    orphan sweep: deleted 1 leftover sandbox(es) labelled {'app': 'pdfkit'}
+    startup took 1.80s
+    LABELLED SANDBOXES AFTER STARTUP: []
+
+So the hole the plan identified is real, and it is closed.
+
+### 2. The snapshot's name is its content
+
+`pdfkit-toolchain` was hand-built once, by a person, and nothing could tell
+from the running system that a `uv.lock` bump had made it stale.
+`.github/workflows/snapshot.yml` replaces that. The name is a 12-hex digest of
+`backend/Dockerfile` + `pyproject.toml` + `uv.lock` — application code
+deliberately excluded, because `app/` is uploaded per job and that is the
+whole reason a snapshot only goes stale when the *toolchain* moves.
+
+The digest is computed by `scripts/build_snapshot.py --print-name`, **not by
+shell in the workflow**, so a human rebuilding by hand and CI rebuilding on a
+push cannot disagree about what to call the result. It normalises CRLF, which
+matters: a Windows checkout and a Linux runner hold the same file with
+different line endings and must not produce differently-named snapshots from
+identical content. Confirmed — both print `pdfkit-toolchain-04701fea2e5e`.
+
+Three new script modes, all exercised against the real account:
+
+| | |
+|---|---|
+| `--print-name` | `pdfkit-toolchain-04701fea2e5e`, stable across runs, no API call |
+| `--skip-existing` | second run on unchanged inputs: `already exists; nothing to build` |
+| `--warm` | create + delete one sandbox, so Daytona does not deactivate it |
+
+**The CI-named snapshot is built and verified on the account**: gs 10.00.0,
+qpdf 11.3.0, 15 tesseract languages, ocrmypdf 17.12.1, and the 4-CPU quota
+(`400000 100000`) the sandbox needs `MAX_CONCURRENT_JOBS` to know about.
+
+**Nothing updates `DAYTONA_SNAPSHOT` automatically**, and the workflow's run
+summary says so in as many words. A dependency bump that has not been
+snapshotted should fail to create a sandbox and fall back to the VPS — which
+`offload.py` already treats as an ordinary failure — rather than silently run
+a toolchain that no longer matches its lockfile because a name pointing at
+"latest" moved under a running deploy.
+
+The weekly `schedule:` cron (Mon 04:00 UTC, clear of the VPS's own Sunday
+Docker cleanup) runs `--warm`. Belt and braces at runtime too:
+`_DaytonaPool.provision()` now recognises a "snapshot inactive"-shaped create
+failure, calls `snapshot.activate()`, and retries **exactly once** — never a
+loop, because the caller already has a good answer for a real failure. The
+match is deliberately narrow (`"snapshot"` *and* an explicit not-active), so
+"Snapshot not found" still falls straight through to the local path without
+paying a second round trip.
+
+`DAYTONA_API_KEY` is set as a repo secret, so the workflow can run.
+
+### 3. Compress, re-measured — part 4's finding does not survive the VPS
+
+Part 4 left this as a blocker: *"Phase 5 must measure Compress on
+representative documents before flipping it on"*, having measured a 10-file
+synthetic batch as 1.3 s local against 7.0 s offloaded and computed a
+break-even around 77 files.
+
+`verify_offload.py` grew a `--corpus-dir` for exactly this, so the harness can
+measure the documents users actually upload instead of generated ones. Run
+against `PDFKit Samples/` — a 50 MB insurance policy, a 15 MB one, a 4 MB
+company profile, a 1.4 MB scan, a 108 KB certificate; 70.7 MB in five files:
+
+| run from | local | offloaded | |
+|---|---|---|---|
+| **the VPS** (the only one that counts) | **189.0 s** | **109.2 s** | **1.73x faster** |
+| a workstation | 77.2 s | 171.7 s | 0.45x |
+
+The workstation row is in the table only to show why the harness docstring
+insists on the VPS: there, transfer was 44.3 s of a 171.7 s run (residential
+link) and the local baseline ran on a CPU that beats the sandbox. From the
+VPS the same 120 MB of transfer costs **3.7 s**, and the sandbox out-computes
+the throttled 2 vCPU box **1.79x**. Both of part 0's link measurements
+reproduce exactly.
+
+**And the CPU argument, which part 4 could not test, holds outright.** Sampling
+`vmstat` on the VPS through an offloaded Compress of the same five documents:
+
+    upload phase (~7 s)     0-54% idle   <- the VPS pushing 70 MB
+    sandbox compute (120 s) 83-98% idle  <- typically 90%+
+    download (~2 s)         13-44% idle
+
+Against 189 s of both cores pegged, which is what the local path costs and is
+precisely the shape of load that twice tripped Hostinger's throttle.
+
+**Conclusion: `compress` stays in `DAYTONA_OPERATIONS`.** Part 4's caveat was
+right about itself — one synthetic photo page per file understates
+Ghostscript's share of a real document's time, and that corpus would not even
+have cleared `DAYTONA_MIN_BYTES` in production.
+
+### 4. Smaller things
+
+- **`/health` reports `sandboxes`** — a process-local counter, incremented and
+  decremented in `_run_shard` (provider-agnostic, so the fake pools count too),
+  never a Daytona round trip on a liveness endpoint. It is decremented whatever
+  happens to the `dispose`, so it says how many sandboxes this process is
+  *using*; one it failed to delete is the TTL's problem and the dashboard's.
+- **`.env.example`, `docker-compose.yml`, `backend/README.md`** all document
+  the full `DAYTONA_*` surface. The README section covers what the feature
+  does, the snapshot lifecycle, and a five-step "if it is misbehaving" list
+  (`/health`, the log's WARNING lines, `DAYTONA_FALLBACK_LOCAL=false` to
+  separate Daytona faults from document ones, the dashboard, `verify_offload`).
+- **`_daytona()`'s client is bound to the loop that built it.** Found while
+  writing the live sweep harness: `TestClient` runs the lifespan on a portal
+  loop of its own, and the cached client then fails with "attached to a
+  different loop". Harmless in production — uvicorn is one loop for the life
+  of the process, the lifespan included — but it is now written down in the
+  docstring, because the fix is to clear the cache around the boot and not to
+  make the client per-call, which would pay a TLS handshake per transfer.
+
+### Tests — 255 → 270
+
+All in `tests/test_offload.py`, all offline. The new fakes stand in for the
+*client* rather than for `SandboxPool`, one level lower than everything else in
+that file, because the sweep and the reactivation retry are the only parts of
+the module that reach for Daytona directly. They are skipped when the SDK is
+not importable, in the `requires_qpdf` style.
+
+- **The sweep**: off by default touches nothing; deletes what a dead process
+  left; filters on our own label; an empty account is the ordinary answer; a
+  list that raises never blocks startup; one stuck orphan does not cost the
+  others theirs; a hanging delete times out instead of hanging startup.
+- **The retry**: woken and retried exactly once; still asleep after waking is
+  *not* retried again (two creates, one activate, no loop); any other failure
+  raises with one create and no activate; and five cases pinning how narrow
+  `_looks_inactive` is.
+- **The counter**: 0, then 2 while both shards are in flight, then 0 again.
+
+### Re-verified against the CI-built snapshot
+
+Everything before this part was verified against the hand-built snapshot from
+part 2. This is the first point where the pipeline's own output is what runs,
+so the whole matrix was re-run against `pdfkit-toolchain-04701fea2e5e`:
+
+- **`verify_offload.py matrix`: 28/28** — output parity, error parity on an
+  encrypted PDF across all four operations, a wrong snapshot name falling back
+  with a correct file still produced, a real cancellation with the sandbox gone
+  in 2 s, Word and Markdown on both a born-digital document and a scan, and
+  Compress's per-file breakdown on a ten-file batch.
+- **`verify_offload.py sharding`: 6/6** — 2 sandboxes cost 1.23x one, a 10-file
+  OCR batch 27.2 s → 16.7 s (**1.63x**, against part 4's 1.67x on the
+  hand-built snapshot), peak 2 alive, 42 monotone frames ending at 100, every
+  sandbox gone afterwards.
+- The account was confirmed empty of sandboxes afterwards, and the VPS harness
+  image and corpus deleted.
+
+## Phase 10 part 4 — sharding a batch across N sandboxes (2026-09-21)
+
+Plan: `docs/phases/phase-10-daytona-sandbox-offloading-phase4.md`. Everything
+outside `offload.py` is untouched — the four heads, `remote_job.py`, the
+routers, the frontend. `maybe_offload` still takes the same three arguments and
+still returns `list[OutputFile] | None` in the same order.
+
+### What is now true
+
+- **A batch is split into `min(len(files), DAYTONA_MAX_SANDBOXES)` contiguous,
+  roughly-even shards** (`_split`), each with its own sandbox, its own
+  `spec.json` naming a slice of the batch's files, and its own upload / exec /
+  download — all run at once under one `asyncio.gather`. `remote_job.py` needed
+  no change at all: it already just processes whatever `files` its spec names.
+- **One semaphore permit is one sandbox, not one request.** A five-file batch
+  with the ceiling at two takes *both* permits, so a second request arriving
+  mid-flight gets none and runs locally — the same answer a saturated pool has
+  always given, and the behaviour the app had before the feature existed.
+  `_claim` takes what is free without ever waiting, so a partly-busy pool means
+  fewer shards rather than a queue.
+- **`FanIn` folds the shards' independent streams into one bar.** Each shard
+  reports a percentage of *its own* file count, so nothing comparable can be
+  relayed straight through; the fold works in whole files instead.
+- **Outputs are recombined in shard order, never completion order**, because
+  Compress's per-file `FileStat` list zips against `batch.files` positionally.
+- **The Phase 2 fallback rule went batch-wide.** "Any Daytona failure before
+  any file succeeded → run locally" now means any file across any shard: once
+  one shard has produced one result line, a lost sibling is a hard 502
+  `remote_job_interrupted` rather than a silent local rerun that would
+  duplicate already-billed work. `_recombine` owns that decision, since it is
+  the only place that can see every shard; a shard itself only ever raises
+  `_Abandoned` and lets the verdict be worked out above it.
+- **Teardown is per shard**, each with its own shielded, bounded `dispose()`,
+  and `gather(..., return_exceptions=True)` is load-bearing: without it the
+  first shard to raise returns from `_offload` while its siblings are still in
+  flight and unawaited, and a sandbox nobody deleted bills until its TTL.
+
+### `FanIn`, and the one place the plan's formula was wrong
+
+The plan sketched a `dict[(shard, file)] -> fraction` and summed it. That does
+not work, and the phase's own acceptance test ("`done == total` when both
+shards report 100%") is what fails: a file's *last* frame before the next one
+starts is rarely 100% of itself, so every finished file stays stuck at whatever
+fraction it was last seen at and the bar ends permanently short.
+
+What ships instead keeps **two numbers per shard** — whole files finished, plus
+the fraction of the one in flight — which is exact rather than approximate,
+because a shard runs its files strictly in order: "file 4 of this shard" is
+itself the news that files 1-3 are done. Within a shard the contribution is
+`clamp(p * n, i - 1, i)`, monotone because `p * n` and `i` both are, so when a
+new file starts and the fraction drops to zero the completed count has already
+risen by one to pay for it. `Publisher._monotonic` stays the backstop and never
+has to do anything. It is also smaller: two ints per shard rather than a dict
+entry per file.
+
+One deliberate keep from the plan: **the detail line follows shard 0**, not
+whichever shard spoke last, so the file name changes at a readable pace instead
+of flickering between unrelated files. The one addition is that any shard may
+fill it while shard 0 has not spoken yet — a blank name under a moving bar
+looked worse than a name that changes once at the start.
+
+Publishing is throttled the way `compress`'s own cursor is (0.25 s / 1.0%),
+since N shims' frames interleaved would otherwise be N times the SSE traffic
+for a bar that only has to read as live. The constants are copied rather than
+imported: `compress` imports `offload`, so importing back would be a cycle.
+
+### Tests — 241 → 255
+
+All in `tests/test_offload.py`. Two of the fakes grew, for reasons sharding
+made real rather than for the new tests' convenience:
+
+- **`ScriptedPool` hands out a distinct id per `provision`** (`scripted-0`,
+  `scripted-1`, …). "Disposed exactly once" is only a meaningful assertion if
+  two sandboxes can be told apart, and with a single constant id the
+  cancellation test was passing two disposals off as one.
+- **Both fakes record the specs they were handed**, because `dispose` takes the
+  tmpdir with it and a shard's slice is otherwise invisible to a test.
+
+The new tests, and what each would catch:
+
+- **`test_five_files_run_as_two_shards_and_come_back_in_file_order`** — the
+  payoff test. Two real shims in two tmpdirs, with the shard holding the first
+  three files held behind an `asyncio.Event` until the other has finished, so
+  completion order is the *reverse* of file order. Proved by mutation:
+  concatenating outcomes in completion order fails it.
+- **`FanIn` unit tests**, no subprocess: monotone across a scripted
+  two-shard interleaving, `done == total` when both report 100, the throttle,
+  the detail line, garbage frames dropped, and a single shard reproducing the
+  shim's own numbers unchanged (Phase 2's behaviour is the one-shard case of
+  this one). Proved by mutation: the plan's per-`(shard, file)` dict fails
+  three of them.
+- **`test_a_batch_smaller_than_the_ceiling_never_makes_an_empty_shard`** and
+  `test_a_half_busy_pool_shards_into_what_is_free` — the two ways shard count
+  comes out below `DAYTONA_MAX_SANDBOXES`.
+- **`test_a_shard_lost_after_a_sibling_produced_results_is_a_hard_error`** —
+  the batch-wide fallback rule, with both sandboxes still disposed exactly once.
+- **`test_every_shard_is_disposed_even_when_another_one_dies`** — one shard
+  raising must not cancel a sibling out of its own teardown.
+- **`test_the_app_tarball_records_nothing_about_this_machine`** — added after
+  the live run, for the staging bug described below. The offline suite could
+  not have found it: the fake pool returns 0 for the unpack because there is
+  nothing to unpack.
+
+### `verify_offload.py sharding`
+
+A third mode beside `matrix` and `timings`, and the only one that runs the same
+batch twice: one sandbox, then `DAYTONA_MAX_SANDBOXES`. It answers this phase's
+two live questions — whether provisioning N at once really costs about what one
+costs, and whether the batch actually finishes sooner — and prints the detail
+line deduplicated, because whether it *reads* as coherent is the one thing no
+assertion can settle.
+
+Smoke-run offline against the fake pool first (4/4), then **run for real from
+the VPS: 6/6**. The numbers it produced are in "The live runs" below.
+
+### The live runs (2026-09-21, from the VPS, real account)
+
+All of it run from a throwaway container on the VPS off the deployed backend
+image plus `daytona` and `pytest` (`Dockerfile.harness`), with this phase's
+`app/`, `tests/` and `scripts/` bind-mounted over it — the same recipe parts 0
+and 2 used, and everything it created was deleted afterwards. The account was
+confirmed empty at the end.
+
+**The premise holds: parallel provisioning is free from the VPS.**
+
+| | seconds |
+|---|---|
+| 1 sandbox | **1.03** |
+| 2 sandboxes, concurrently | **1.14** (1.11x the cost of one) |
+
+Phase 0's residential-link claim (2-in-parallel at the same 1.43 s as one)
+survives re-measurement on the path that matters. One wrinkle worth keeping:
+the **first** create in a process costs ~3.5 s, not 1 s — the client, its TLS
+handshake and the snapshot lookup are all paid there. The first run of this
+measured 3.46 s for one sandbox against 1.13 s for two, i.e. "0.33x", which is
+not a thing that can be true; `parallel_create` now does a throwaway create
+first so the comparison is honest.
+
+**The payoff is real: a 10-file, 6-page-each OCR batch.**
+
+| | seconds |
+|---|---|
+| one sandbox (parts 2/3's behaviour) | **21.1** |
+| two sandboxes (this part) | **12.7** |
+| | **1.67x faster** |
+
+Not 2x, and it should not be: provisioning, upload and download are largely
+fixed, so only the compute halves. Two sandboxes were confirmed alive at once
+on the account during the batch, and both were gone 10 s after it finished.
+The bar published 41 frames, never went backwards, and ended at exactly 100.
+
+**The detail line reads the way the design intended.** Deduplicated, in order:
+
+    file 1  05.pdf   Reading the pages     <- shard 1 got there first
+    file 1  00.pdf   Reading the pages     <- shard 0 speaks, and keeps the line
+    file 2  00.pdf … file 10  04.pdf       <- shard 0's files, 00 through 04
+
+One frame from the other shard before shard 0 started, then shard 0's own files
+in order while the count climbs with the whole batch's fold. That single
+handover at the start is the `or not self._name` clause in `FanIn.update`, and
+it is better than the blank name it replaced.
+
+### The bug the live run found — and the fake pool never could
+
+**Every batch was silently falling back to the VPS**, with
+`could not stage the job: RuntimeError: unpacking app/ exited 2`. The first
+sharding run therefore "measured" two local runs and reported a 1.15x win.
+
+`tarfile` records the *source file's* uid/gid. The archive built from a
+bind-mounted checkout carried **uid 197609 / gid 197121** — Windows-mapped
+ownership — and GNU tar in the sandbox, running as root, dutifully tried to
+`chown` every extracted file to it, failed with `Invalid argument`, and exited
+**2 after writing every file correctly**. `_stage` reads a non-zero exit as
+"could not stage", and the whole feature turns itself off without a word.
+
+Two fixes, each defending a different half:
+
+- `_without_caches` now normalises the archive to `uid=gid=0`, `root:root`.
+  The tarball should say nothing about the machine that built it.
+- the unpack command carries `--no-same-owner`, so extraction never attempts a
+  chown whatever the archive claims.
+
+Offline test: `test_the_app_tarball_records_nothing_about_this_machine`.
+
+**Production was never hit** — the deployed image's `COPY app ./app` gives
+uid 0, and part 2's dev runs were inside that same image — but anyone
+bind-mounting a checkout to debug offloading would have been, which is exactly
+what happened here.
+
+### Part 3's matrix: 28/28
+
+Output parity, error parity on an encrypted PDF across all four operations, a
+wrong snapshot falling back with a correct file still produced, a real
+cancellation, Word and Markdown on both a born-digital document and a scan, and
+Compress's per-file size breakdown on a ten-file batch (`10 rows, 749,998 B
+from 3,186,700 B, local 23.5% / remote 23.5%`).
+
+**Section 4 failed the first time, and it was the harness, not the code.** The
+cancellation check hung up on a fixed `sleep(6)`, and the batch it meant to
+cancel now finishes in under six seconds — part 2's unpack fix plus a warm
+client — so the "client" was hanging up after it already had its file, and the
+section reported `no error` exactly as a cancellation regression would. It now
+hangs up on the **first progress frame**, which is the earliest moment there is
+definitely something to cancel and does not move when the feature gets faster.
+With that, `499 cancelled`, sandbox gone in 2 s.
+
+### Compress's economics — the number part 3 was missing, and it is not the expected one
+
+| batch (synthetic photo-page PDFs) | local | offloaded |
+|---|---|---|
+| 10 files, 3.2 MB | **1.3 s** | **7.0 s** |
+| 30 files, 9.5 MB | — | 8.4 s (sandbox compute 6.0 s) |
+
+Sandbox compute went 4.3 s (10 files) → 6.0 s (30 files), so on this corpus:
+
+- **marginal cost 0.085 s/file remote against 0.13 s/file local** — the sandbox
+  core really is ~1.5x the VPS core here, as expected;
+- on a **fixed ~3.5 s** per offloaded run: two shards' worth of interpreter and
+  toolchain start, which the local path has already paid;
+- **break-even ≈ 77 files.** Compress is a wall-clock loss at every realistic
+  batch size on this corpus.
+
+And the CPU protection argument does not rescue it here either. During the
+30-file offloaded batch the VPS sat at 76-89% idle while the sandboxes worked
+(dipping to 38-45% for ~3 s of upload and ~2 s of download) — but the local
+compress it replaced was **1.3 s of work**. There was no CPU problem to protect
+against.
+
+**Caveat, and it matters:** `corpus("compress", …)` is one synthetic photo page
+per file. A real Compress input is a 5-50 MB multi-page scan, where Ghostscript's
+share of the time is far larger — part 0 measured 1.75x sandbox-over-local on
+its realistic input. Note too that the 10-file/3.2 MB batch **would not have
+offloaded in production at all**: `DAYTONA_MIN_BYTES` is 5 MB and the harness
+sets it to 0.
+
+So this is evidence about one corpus, not a verdict. What it does say is that
+**Phase 5 must measure Compress on representative documents before flipping it
+on**, and that the per-operation `DAYTONA_MIN_FILES` / `DAYTONA_MIN_BYTES`
+override part 3 deliberately deferred is now the likely answer — or simply
+leaving `compress` out of the default `DAYTONA_OPERATIONS`.
+
+### Left to run
+
+1. **A browser pass** on Compress's done screen with offloading on, and a watch
+   of the SSE bar during a real sharded batch in the UI. Both need the feature
+   turned on in a deployed environment, which is Phase 5's job.
+2. **Compress on representative documents**, per the section above.
+
+### One reporting trap in `timings`, introduced by sharding
+
+The breakdown sums each call's own duration, and shards' calls overlap — so the
+percentages add up to more than 100 and `(unaccounted)` goes negative (-3.78 s
+on a two-shard Compress batch). It reads like a bug and is not one. The script
+now says so when it is sharding, and `DAYTONA_MAX_SANDBOXES=1` gives a
+breakdown that sums.
+
+## Phase 10 part 3 — Word, Markdown and Compress get their heads (2026-09-20)
+
+Plan: `docs/phases/phase-10-daytona-sandbox-offloading-phase3.md`. The plan
+called this "three small, mechanical edits plus their tests", and that is what
+it was: no new orchestration machinery, `offload.maybe_offload()` unchanged.
+
+### What is now true
+
+- **`word.to_word` and `markdown.to_markdown` each gained the three-line head**,
+  passing `{"ocr_mode": ..., "languages": ...}` — the exact two options
+  `remote_job._run_word` / `_run_markdown` have been reading since part 1.
+  Nothing on the sandbox side changed for either.
+- **`compress.compress` gained the one head that is more than "return the
+  list."** It returns a `CompressionResult`, not `list[OutputFile]`, so the head
+  re-derives `original_size` / `result_size` / per-file `FileStat` from
+  `upload.size` (known before anything ran) and the bytes that arrived on disk.
+  Those four lines duplicate the local path's own construction rather than being
+  factored into a shared helper — the two read from different sources and one
+  helper would need a parameter just to say which.
+- **`DAYTONA_OPERATIONS` now defaults to `ocr,word,markdown,compress`** in
+  `config.py`, `.env.example` and `docker-compose.yml`. Order is
+  compute-per-byte, which is documentation: `eligible()` only tests membership.
+- **No per-operation `DAYTONA_MIN_FILES` override was added**, even though the
+  plan's own Context section flags Compress as the operation most likely to want
+  one. That waits for Phase 5's production data rather than being guessed at now.
+
+### Why Word and Markdown before Compress, reversing the original plan
+
+Part 0's measurements, not preference. Ghostscript compress was 1.75x
+sandbox-over-local, below the plan's own ">= 2x" bar and on a 0.3–0.6 s
+operation that is mostly process startup. OCR was 2.62x per core. Word and
+Markdown both route their OCR sub-step through the same `ocr_to_path`, so they
+inherit OCR's economics whenever OCR fires and are at worst compress-like
+otherwise. Compress stays in the set regardless: its win is **VPS-CPU
+protection** on a big batch — ~20 subprocesses per file moved off the box —
+more than per-file speed.
+
+### Tests — 212 → 241
+
+All in `tests/test_offload.py`, extending part 2's fakes rather than starting a
+new file, because `FakeSandboxPool` and the decision-matrix machinery were
+already operation-agnostic.
+
+- **The decision matrix is parametrized across all four operations now.** Both
+  `test_offloading_is_off_by_default` and `test_a_failed_gate_never_touches_the_pool`
+  run per operation, the latter with an `OTHERS` sentinel that builds "an
+  allowlist naming every operation but this one" once the parametrized operation
+  is known. This is what says part 2's implementation never silently
+  special-cased OCR.
+- **`test_every_head_asks_for_its_own_operation`** stubs `maybe_offload` to
+  record and then raise, so the local path never starts and the test needs no
+  tool at all. It is the only test that catches the copy-paste this phase was
+  most exposed to — a head naming a sibling operation — because the shim would
+  otherwise dispatch happily and produce a plausible file of the wrong kind.
+  (Proved by mutation: flipping markdown's head to `"word"` fails this test.)
+- **Word and Markdown round-trips**, each run twice — once offloaded through the
+  real shim in the fake pool, once locally — and compared on download name,
+  media type and *visible content* (`docx_text` / the Markdown text). Plus a
+  scan through each with `ocr_mode="auto"`, the mode that routes through
+  `ocr_to_path` and so is the one worth offloading.
+- **Compress's size report** gets the dedicated assertion the plan asked for:
+  per-file `FileStat` rows paired with the right uploads (the two fixtures have
+  deliberately different page counts, so a mis-zip or a repeated row shows up),
+  each `result_size` equal to the file that actually arrived, and the totals
+  agreeing. Also proved by mutation.
+- **Error parity** for `compress` / `word` / `markdown`: a locked PDF returns
+  422 `password_required` identically on both paths, driven through the real
+  drivers, with the sandbox still disposed of.
+- **A compress fallback test** drives `compress.compress` through a failed
+  provision, because fallback has to skip the whole head — walrus and
+  re-derivation alike — not just `maybe_offload`.
+
+`docker compose run --rm --build backend-tests` → **241 passed, 1 skipped**
+(183 → 212 → 241). The skip is still the opt-in live test. **Use `--build`**:
+the test image `COPY`s `app/` and `tests/`, so a plain `run` silently tests the
+previous commit's code — that mistake cost a confusing "212 passed" here.
+
+### `scripts/verify_offload.py` now covers all four
+
+Part 2 committed this script saying "Phase 3 wants to re-run exactly this". It
+was OCR-only, so re-running it would have proved nothing about the new heads.
+Extended rather than duplicated:
+
+- A `drive(operation, batch)` / `readable(operation, output)` / `corpus(...)`
+  table, since the only thing that differs between the four is which driver to
+  call and what a readable output looks like.
+- **Section 2 (error parity) now loops over all four operations.**
+- **New section 5**: Word and Markdown, each on a born-digital document *and* a
+  scan, local vs remote, compared on download name, content and a monotonic bar.
+- **New section 6**: Compress on a ten-file batch, asserting the per-file size
+  breakdown Phase 8 added — the numbers, not just "a file came back", because
+  a wrong re-derivation shows the user plausible nonsense rather than an error.
+- `timings` gained `--operation` and `--files`, so the CPU observation during a
+  Compress batch is `timings --operation compress --files 10 --remote-only`.
+
+The script's own new code was smoke-run offline against the unit tests'
+`FakeSandboxPool` (sections 2, 5 and 6, 21/21 PASS) so it is not shipped
+unrun — but that is the fake pool, not Daytona.
+
+### What was left to run — **all of it ran on 2026-09-21, in part 4**
+
+Nothing here was run in part 3's own session; there were no credentials in that
+environment. Part 4 ran every item from the VPS against the real account, and
+the results live in that section:
+
+1. `matrix --pages 6 --files 10` — **28/28**, including this part's sections 5
+   and 6 (Word and Markdown parity, Compress's per-file size breakdown).
+2. `timings --operation compress --files 10 --remote-only` from the VPS with
+   `vmstat` — done, and the answer is not the one this part assumed. The VPS
+   does stay near-idle while the sandboxes work, but the local Compress it
+   replaces is so cheap on the measured corpus that **offloading it is a
+   wall-clock loss**. See "Compress's economics" in part 4.
+3. The browser pass on Compress's done screen is still outstanding: it needs
+   the feature turned on in a deployed environment, which is Phase 5's job.
+
+## Phase 10 part 2 — `offload.py`, wired into OCR only (2026-09-20)
+
+Plan: `docs/phases/phase-10-daytona-sandbox-offloading-phase2.md`. **Done, and
+verified against a live Daytona account** — the snapshot exists, the matrix passes,
+and two real bugs were found by running it for real. See "What the live runs found".
+
+`DAYTONA_ENABLED` defaults to `false`, so this ships dark: every existing test
+exercises the old code path unchanged, and turning it on is Phase 5's deliberate,
+separate act.
+
+### Step 0 first: the streaming-exec question the spike never answered
+
+The plan opened by insisting this be checked before writing `_DaytonaPool.run`,
+because Phase 0's spike used a single blocking `POST /process/execute` and so could
+not have discovered a problem here. Verified against the **pinned `daytona`
+0.214.0**, by installing it and reading the source — both assumptions hold, with
+the method names the plan guessed at:
+
+- `SessionExecuteRequest(command=..., run_async=True)` +
+  `process.execute_session_command()` returns as soon as the command *starts*,
+  handing back a `cmd_id`;
+- `process.get_session_command_logs_async(session_id, cmd_id, on_stdout, on_stderr)`
+  streams over a websocket with **separate** stdout/stderr callbacks, sync or
+  async. It delivers **chunks, not lines** — so `offload._Lines` splits them, the
+  small version of what `runner._Pump` does for a subprocess pipe.
+- `process.get_session_command(...).exit_code` is how the exit status comes back,
+  polled briefly because the log socket's EOF can beat the command record.
+- The `/sandbox/paginated` bug is **gone**: `AsyncDaytona.list()` calls
+  `list_sandboxes` → `GET /sandbox` with cursor paging. The deprecated paginated
+  endpoint still exists in the generated client but nothing in `list()` reaches it.
+  Phase 5's orphan sweep can use `list()` as designed.
+
+The dependency is pinned `daytona==0.214.0`, not floated, because neither of the
+first two shapes is guaranteed by semver.
+
+### What is now true
+
+- **`backend/Dockerfile` has a `toolchain` stage** — `FROM base` plus
+  `ENTRYPOINT ["sleep", "infinity"]`, two lines. `base` was already exactly the
+  right layer (every apt package, `uv sync --no-install-project`, no `COPY app`),
+  so no surgery was needed. The entrypoint has to live in the Dockerfile rather
+  than the snapshot request, per Phase 0's finding.
+- **`backend/scripts/build_snapshot.py`** builds the snapshot from that stage.
+  `buildInfo` takes a Dockerfile, not a target, so the script **slices the `base`
+  stage out of the real Dockerfile and appends `toolchain`'s own lines** — the apt
+  list and the locked dependency install physically cannot drift from what the
+  backend image is built with. `pyproject.toml`/`uv.lock` ride along as the build
+  context via `Image.dockerfile_commands(..., context_dir=...)`. `--print` dumps
+  the flattened Dockerfile touching no API; `--verify` creates a throwaway sandbox
+  and execs `gs`/`qpdf`/`tesseract`/`ocrmypdf` in it. Phase 5 turns this into CI
+  with content-hash tagging.
+- **`config.py` has seventeen `DAYTONA_*` knobs plus `remote_timeout_for()`**,
+  every one read as `config.X` at call time.
+- **`Publisher.batch()`** sets an already-folded batch percentage directly,
+  bypassing `_overall()`. Needed now, not at Phase 4: the shim folds its own files
+  into a batch-wide number inside the sandbox, and pushing that back through
+  `file`/`step`/`percent` would fold it a second time against this process's own
+  bookkeeping. Still monotonic. `NullPublisher` inherits it for free.
+- **`app/services/offload.py`** — `maybe_offload()` plus the `SandboxPool`
+  protocol and `_DaytonaPool`. Nothing outside this module imports `daytona`, and
+  even inside it the import is inside the function, so the module stays importable
+  on a machine without the SDK.
+- **`ocr.py` pins `--jobs` and gained the three-line head.** `compress`/`word`/
+  `markdown` are untouched — Phase 3.
+
+### Decisions made while building it, that Phases 3 and 4 inherit
+
+- **A saturated `DAYTONA_MAX_SANDBOXES` runs the batch locally rather than
+  queueing.** Waiting for a remote slot would stack a queue in front of the local
+  path's own `QUEUE_TIMEOUT_SECONDS` queue, and falling through is exactly the
+  behaviour that existed before the feature. Non-blocking check, no new knob.
+- **A per-file error aborts the exec; it does not wait for the shim to finish.**
+  The shim keeps going after a `status: "error"` line (it has no per-batch verdict
+  to make), so without this a 20-file batch with an encrypted first file would make
+  the user wait for all 20. A watchdog task polls both `relay.failure` and
+  `progress.client_gone()` every 2 s and cancels the exec; the same loop is what
+  gives cancellation its 499.
+- **Output files are downloaded after the run, not inside `on_line`.** The plan's
+  §6 reads as if the `get` happens on each `status: "ok"` line, but its own §5 says
+  the callback must be non-blocking. The callback parses and records; `_collect`
+  downloads. `result_size` from the shim is checked against the bytes that arrive.
+- **The Daytona client is a process-wide singleton**, rebuilt if the credentials
+  change, so the TLS connection pool is reused across requests — part of what makes
+  Phase 0's 60 MB/s a per-transfer number. `DAYTONA_TARGET` lives on that client
+  (`DaytonaConfig(target=...)`), not on the create call.
+- **`MARKER` is copied into `offload.py`, not imported** from `remote_job` —
+  importing it would be a cycle, since that module imports every service and `ocr`
+  now imports `offload`. `test_offload.py` asserts the two stay equal, the same
+  arrangement `ocr.MARKER` already has with its plugin.
+- **`--jobs` is a behaviour change on the local path too**, deliberately: OCRmyPDF
+  previously auto-sized from `os.cpu_count()`. On the 2 vCPU VPS that already was 2,
+  so production is unchanged; on a bigger dev box OCR now uses fewer workers.
+
+### Verified
+
+- `docker compose run --rm backend-tests` → **212 passed, 1 skipped** with no
+  `DAYTONA_*` env vars set (183 before this phase, 29 new). The skip is the opt-in
+  live test, `@pytest.mark.skipif(not os.getenv("DAYTONA_API_KEY"))`.
+- `docker build --target toolchain` builds, and `gs 10.00.0` / `ocrmypdf 17.12.1` /
+  `qpdf 11.3.0` / `import ocrmypdf, pypdf, fitz` all resolve inside it.
+- **The whole sandbox contract, rehearsed locally in that image**: staged
+  `offload._app_tarball()` (79 KB) and a real spec into a volume mounted at
+  `/work`, then ran the exact command `_exec` builds —
+  `mkdir -p /app && tar xzf /work/app.tgz -C /app && cd /app &&
+  MAX_CONCURRENT_JOBS=4 /opt/venv/bin/python -m app.tools.remote_job /work/spec.json`.
+  Exit 0, progress frames on stderr rising 0 → 15 → 71.2 → 100, one result line on
+  stdout, and a real 9,345-byte OCR'd PDF in `/work/out`. That is everything a live
+  sandbox does except the network.
+- `tests/test_offload.py` covers the four decision-gate misses, the saturated pool,
+  a real round trip through the shim, the encrypted-input 422 **not** falling back,
+  relayed progress being monotonic to 100, provision failure → local fallback (and
+  `ocr.ocr` then producing a correct file through its own loop), exit 1 → fallback,
+  a loss after partial results → 502, `DAYTONA_FALLBACK_LOCAL=false` → 502,
+  cancellation → 499 with exactly one dispose, budget overrun → 504, staging paths,
+  the tarball's contents, chunk-split line reassembly, and `Publisher.batch()`'s
+  identity, monotonicity and detail-line behaviour.
+
+### What the live runs found (2026-09-20, real account)
+
+The offline suite proves the orchestration; it cannot prove Daytona behaves as
+assumed. Running it for real found **two bugs the fake pool could not have**.
+
+**The snapshot exists.** `scripts/build_snapshot.py` built `pdfkit-toolchain` in
+one pass — ACTIVE, 4 vCPU / 4 GiB / 10 GiB. `--verify` on a throwaway sandbox:
+`gs 10.00.0`, `qpdf 11.3.0`, `ocrmypdf 17.12.1`, 15 Tesseract languages, and
+`import ocrmypdf, pypdf, fitz` all resolve. The flatten-the-Dockerfile approach
+worked first time, entrypoint-in-the-content and all.
+
+**`nproc` inside a sandbox now reports 64**, against `cpu.max` of `400000 100000`
+(= 4 CPUs). Phase 0 measured 48. The number is not merely wrong, it *drifts* —
+which retires any thought of ever deriving it from inside. The `--jobs` pin is
+load-bearing, not precautionary.
+
+**Bug 1, found by the live test — one session per command was a hard conflict.**
+`_DaytonaPool.run` derived its session id from the sandbox id, and `run` is called
+twice per batch (the unpack, then the shim), so the second call hit
+`DaytonaConflictError: session already exists`. The fallback did its job perfectly
+— the batch ran locally and the user would have seen nothing — which is exactly
+how this would have hidden in production as "offloading mysteriously never works".
+Now one session is created per sandbox and reused, which is the SDK's own
+documented pattern.
+
+**Bug 2, found by the timings breakdown — the unpack cost 2.19 s.** The `tar xzf`
+was paying for a session, a websocket and an exit-code poll to stream output
+nobody reads. `SandboxPool.run` now takes `on_line: ... | None`, meaning exactly
+what it means on `runner.run`, and `_DaytonaPool` takes a single blocking
+`process.exec()` when there is no reader. **2.19 s → 0.18 s** on a workstation, and **0.02 s** on the
+VPS — where it had been a third of the entire per-job overhead.
+
+**The matrix passes 8/8** (`scripts/verify_offload.py matrix`, committed so Phase 3
+can re-run it): download name unchanged, same text layer word for word, the SSE bar
+monotonic to 100, an encrypted PDF giving `422 password_required` identically with
+offloading off and on, a wrong `DAYTONA_SNAPSHOT` falling back and still returning a
+correct file, a real cancellation returning `499 cancelled` with the sandbox gone
+from the account within 2 s.
+
+One correction to the plan's wording: outputs are **not byte-identical** across the
+two paths and cannot be — OCRmyPDF stamps a creation time and document id into
+every file. Observed difference is 0–1 bytes on a 71 KB output, with identical
+extracted text. That is the assertion the script makes.
+
+### Timings at realistic scale — measured on the VPS, which is the only place it counts
+
+`scripts/verify_offload.py timings --pages 50` on a 50-page / 2.3 MB scan. Run
+**twice, in two places**, because running it in the wrong place inverts the
+answer. Both used a throwaway container off the deployed backend image, Phase 0's
+recipe (the deployed image predates this phase, so the SDK and `app/` were
+supplied at run time; nothing about the running service was touched).
+
+| | dev workstation | **the VPS** |
+|---|---|---|
+| local path (`--jobs 2`) | 5.0 s | **20.4 s** |
+| remote path, total | 17.7 s | **12.0 s** |
+| — sandbox compute (`--jobs 4`) | 8.0 s | 7.5 s |
+| — transfer, 2.3 MB up / 0.6 MB down | 6.2 s | **0.9 s** |
+| — provision + dispose + unpack | 3.5 s | 3.6 s |
+| compute speedup | 0.62x | **2.73x** |
+| verdict | offload is a 3.5x *loss* | offload is a **1.7x win** |
+
+The two rows that move are exactly the two Phase 0 predicted would: the transfer
+(60+ MB/s from the datacenter against ~0.9 MB/s residential) and the local
+baseline (a 2026 workstation is four times a contended VPS core). **2.73x lands
+almost exactly on Phase 0's 2.62x**, measured independently, a year of hardware
+apart, on a document eight times the size. That is the plan's ">= 2x or the
+parallelism premise fails" bar, cleared on the real case rather than a 6-page
+proxy.
+
+### Does the VPS actually stay idle? Yes — measured, not argued
+
+The first VPS run could not answer this: it ran the local path and the remote path
+back to back in one container, so no CPU sample could be attributed to either.
+`verify_offload.py` therefore grew `--remote-only` and prints `REMOTE-START` /
+`REMOTE-END` epoch markers, so an external sampler can say which of its samples
+belong to the claim. `vmstat` every ~2 s across the whole run:
+
+| phase | mean idle | min idle |
+|---|---|---|
+| baseline (18 other apps, nothing of ours) | 86.4% | 74% |
+| the harness building the fixture + installing deps | 15.6% | **1%** |
+| **the sandbox doing the OCR** | **73.0%** | 40% |
+
+and the remote window's samples in order — `41 46 40 · 81 87 87 88 88 95 89 · 61`
+— show the shape plainly: a brief dip while 2.3 MB is read and uploaded, then
+**~88% idle, indistinguishable from baseline, for the whole time the sandbox is
+running Tesseract.** For contrast, the local OCR in the earlier combined run drove
+idle to 0–4% and load from 0.52 to 2.86.
+
+So the feature does what it was built for. The VPS is idle during the expensive
+part, and the expensive part also finishes sooner.
+
+### Nothing is left open on this phase
+
+The VPS working directory was removed and the credentials file shredded; the
+Daytona account holds the `pdfkit-toolchain` snapshot and **zero sandboxes**. VPS
+load returned to 0.63 and disk is unchanged at 69%.
+
+Phase 5 still owns flipping `DAYTONA_ENABLED=true` in Coolify, the CI snapshot
+rebuild, and the orphan sweep — but none of those are blocked on evidence any more.
+
+## Phase 10 part 1 — the `remote_job.py` shim (2026-09-20)
+
+Plan: `docs/phases/phase-10-daytona-sandbox-offloading-phase1.md`. **Done and verified.**
+A pure addition — exactly two new files, nothing existing edited, confirmed with
+`git diff --stat`:
+
+- `backend/app/tools/remote_job.py` — the third `app/tools` shim. Reads a JSON spec,
+  dispatches each file to the existing per-file service function (`compress_one`,
+  `ocr_one`, `to_word_one`, `to_markdown_one`), writes one result line per file to
+  **stdout** and progress frames to **stderr**, same conventions as `anydoc_cli`.
+- `backend/tests/test_remote_job.py` — 17 tests, all offline, invoking the shim as a real
+  local subprocess against a tmpdir standing in for `/work`. No Daytona SDK, no config
+  knobs, no network: `docker compose run --rm backend-tests` is 183 passed.
+
+### Decisions made while building it, that Phase 2 inherits
+
+- **Files run one at a time, like the batch drivers.** A single `Publisher` carries one
+  file index at a time, so concurrent files would interleave into incoherent progress
+  frames — and sequential is what the local path does, which is the behaviour an
+  offloaded job has to reproduce. `MAX_CONCURRENT_JOBS` still has to be set on the shim's
+  process (it sizes `runner._slots` at import, which is the free win), but it governs the
+  subprocess concurrency *inside* a file, not a file-level pool.
+- **Exit 1 is "the shim could not run", and its diagnostic goes to stderr**, unlike
+  `anydoc_cli`'s, which puts it on stdout because `markdown._parse` reads stdout even on
+  failure. Here stdout is strictly the per-file result contract, so leaving it empty makes
+  "no results" unambiguous. A per-file `HTTPException` is a `status: "error"` line with
+  `http_status`/`detail` verbatim and exit **0**; any other escaping exception aborts the
+  batch with exit 1, matching what a batch driver would have done locally (a 500) and
+  letting the orchestrator fall back rather than invent a per-file verdict.
+- **The terminal 100% frame is only emitted on a clean batch.** Locally it is the
+  `job_publisher` dependency that publishes terminality, with `reason=ERROR` and the bar
+  left where it stopped on a failure. An unconditional 100 would hand the orchestrator a
+  "finished" frame for a batch it is about to re-raise a 422 from.
+- **Spec defaults mirror the routers**, so a smoke spec needs only `operation` + `files`:
+  `level=recommended`, `languages=["eng"]`, `ocr_mode` `off` for `word` and `auto` for
+  `markdown`. Relative `input` paths resolve against the spec's own directory, so the
+  orchestrator can write `{"input": "in/a.pdf"}` next to `/work/spec.json` without either
+  side agreeing on an absolute path. `out_dir`/`scratch_dir` default to `out`/`scratch`
+  beside the spec.
+- The plan's example error line says `"detail": "encrypted_input"`; the real value is
+  **`password_required`** — `errors.encrypted_input()` raises `422 password_required`.
+  The tests assert the real one.
+- `_run_compress` reaches for `compress._Cursor`, which is private. Deliberate: it is what
+  `compress.compress` passes, and dropping it would silently lose every intra-file step.
+
+### Left for Phase 2, noted here so it is not lost — **both done in part 2**
+
+- ~~**`ocrmypdf --jobs` still needs pinning.**~~ Done: `ocr.ocr_to_path` now passes
+  `--jobs str(config.MAX_CONCURRENT_JOBS)`, which `word` and `markdown` inherit for
+  free since they share that function.
+- ~~`FakeSandboxPool` should reuse `tests/test_remote_job.py::run_remote_job`~~ Done:
+  `tests/test_offload.py::FakeSandboxPool.run` calls it in a thread. Its only added
+  trick is path translation — the sandbox's `/work` is a tmpdir here, so `spec.json`'s
+  `out_dir`/`scratch_dir` are rewritten on the way in.
+
+## Phase 10 part 0 — Daytona offload measurement spike (2026-09-20)
+
+A throwaway measurement, not shipped code. Plan:
+`docs/phases/phase-10-daytona-sandbox-offloading-phase0.md`. Script:
+`backend/scripts/spike_offload.py` — kept as the spike artifact, deliberately
+**stdlib-only** against Daytona's REST API (no `daytona` SDK), so it runs unmodified in
+the production runtime image with nothing installed into it. It is not imported by
+anything, not copied into the image by `backend/Dockerfile`, and no later phase depends
+on it; delete it freely.
+
+Run on the VPS as a throwaway container off the deployed backend image, not by exec'ing
+into the live one (same egress path, zero risk to the running service):
+
+```
+docker run --rm --env-file daytona.env -v /root/pdfkit-spike:/spike:ro \
+  --entrypoint python <backend-image> /spike/spike_offload.py --pages 6
+```
+
+### The verdict: GO — transfer is noise, and offloading is also a genuine speed win for OCR
+
+| Measurement (VPS → Daytona, n=5) | min | median | max |
+|---|---|---|---|
+| upload 5 MB | 5.60 MB/s¹ | 71.70 MB/s | 86.10 MB/s |
+| upload 25 MB | 83.53 | **105.09** | 115.11 |
+| upload 50 MB | 95.54 | **102.25** | 114.09 |
+| download 5 MB | 23.85 | 28.75 | 41.68 |
+| download 25 MB | 35.09 | **47.05** | 50.07 |
+| download 50 MB | 33.42 | **48.51** | 76.08 |
+
+¹ first sample of the run — TLS handshake, not the link.
+
+**Median across all sizes and both directions: 60.1 MB/s.** That is the plan's
+"**> 20 MB/s → transfer is noise**" bucket, by a factor of three. In wall clock a 50 MB
+file costs **0.49 s up and 1.03 s down**. The residential 1.4–1.8 MB/s figure the plan
+was worried about was an artifact of the measuring workstation, exactly as suspected —
+the datacenter link is ~40× faster.
+
+Everything else in the per-job fixed cost is smaller still:
+
+| | min | median | max |
+|---|---|---|---|
+| create → ready, from a named snapshot | 0.71 s | **0.79 s** | 0.84 s |
+| delete | 0.13 s | 0.14 s | 0.15 s |
+| `app/` tarball (61 KB gz) upload + `tar xzf` | 0.04 s | **0.05 s** | 0.05 s |
+
+Provisioning off the VPS is *faster* than the 1.06–1.63 s measured residentially, and the
+per-request `app/` upload the design pays on every job is 50 ms. **Total fixed overhead
+for an offloaded job is ~1 s plus ~1.5 s of transfer for a full 50 MB file — call it
+2.5 s worst case.**
+
+### Compute: a Daytona core is ~2.6× a VPS core on OCR
+
+Identical argv on both sides, 6-page generated scan, 2 runs each. "local" is a container
+off the same backend image on the VPS (2 vCPU, and genuinely contended — the box was at
+load ~0.7 from the other 18 apps throughout, which is the honest baseline).
+
+| operation | sandbox (4 vCPU) | local (VPS) | speedup |
+|---|---|---|---|
+| Ghostscript compress | 0.32 s | 0.57 s | 1.75× |
+| `ocrmypdf --jobs 1` (per-core comparison) | 1.83 s | 4.78 s | **2.62×** |
+| `ocrmypdf --jobs 4` vs local `--jobs 2` (real conditions) | 1.07 s | 3.93 s | **3.67×** |
+
+The plan's kill criterion was "a 4 vCPU sandbox not ≥ 2× a VPS core on the same file →
+the parallelism premise fails." **For OCR it passes on the honest reading**: a single
+Daytona core beats a single VPS core 2.62×, before any parallelism, and the realistic
+4-vs-2 comparison is 3.67×. So the feature is a speed win, not only VPS-CPU protection,
+and user-facing copy may say so — **for OCR**.
+
+Compress's 1.75× is below the bar, but that row is weak evidence in either direction: the
+whole operation is 0.32–0.57 s, so it is mostly process startup. Treat it as consistent
+with the plan's own note that Compress is the marginal case, not as a measurement of
+Compress at realistic sizes.
+
+### The one surprise, and it is load-bearing for Phase 1
+
+**`nproc` inside a Daytona sandbox reports the runner's core count, not the sandbox's
+quota.** Measured: `nproc` = 48 and `len(os.sched_getaffinity(0))` = 48, while
+`/sys/fs/cgroup/cpu.max` = `400000 100000` (= 4 CPUs) and `memory.max` = 4 GiB. Anything
+that sizes its worker pool from `os.cpu_count()` will start 48 workers inside a four-CPU
+quota.
+
+This lands directly on Phase 1's `remote_job.py`: that phase already says
+`MAX_CONCURRENT_JOBS` must be set as an env var on the shim process "sized to that
+container's own vCPU count" — this measurement says **that number cannot be discovered
+from inside the sandbox and must be passed in** by the orchestrator, and that
+`ocrmypdf --jobs` needs pinning for the same reason. (Not measurably harmful on the
+6-page fixture, because OCRmyPDF caps jobs at page count — 6 pages never reaches 48. The
+exposure is a 50-page scan, which this spike did not test.)
+
+### Resulting changes to the plan
+
+- **Phase 1 is unchanged and cleared to start**, plus the `nproc` note above.
+- **`DAYTONA_MIN_BYTES` stops being load-bearing.** At 60 MB/s the byte count barely
+  affects the decision; the gate should be about *expected compute*, not transfer. With
+  ~2.5 s of fixed overhead worst case, offload pays whenever local work would exceed
+  ~5 s. `DAYTONA_MIN_FILES` (and operation type) is the honest gate; keep
+  `DAYTONA_MIN_BYTES` as a cheap floor but the 5 MiB default is now arbitrary rather than
+  economically derived.
+- **Keep Compress in the offload set, but last.** Order by compute-per-byte as the plan
+  already intended: OCR first, then PDF→Word / PDF→Markdown, Compress last.
+- **`pdfkit-toolchain` must exist as a real snapshot before Phase 2 — the default is not
+  good enough.** Daytona's stock snapshots carry no Ghostscript, Tesseract or OCRmyPDF,
+  so none of the four operations can run on them at all. Building one is cheap and the
+  recipe is now known: `POST /snapshots` with `buildInfo.dockerfileContent`, ~3 minutes
+  one-time, 0.40 GB, after which create → ready is 0.79 s. Two API constraints found the
+  hard way, both worth carrying into the Phase 2 CI step:
+  - a top-level `entrypoint` may **not** accompany `buildInfo` ("Cannot specify an
+    entrypoint when using a build info entry") — put `ENTRYPOINT ["sleep", "infinity"]`
+    in the Dockerfile instead;
+  - `cpu`/`memory`/`disk` may **not** be sent on `POST /sandbox` when creating from a
+    snapshot ("Cannot specify Sandbox resources when using a snapshot") — sandbox
+    resources come from the snapshot, so they are set at snapshot-build time.
+  The spike's own `pdfkit-spike-toolchain` (English-only OCR) was deleted afterwards;
+  `spike_offload.py` rebuilds it automatically if re-run.
+- **Free-tier sizing holds.** One 4 vCPU / 4 GiB / 10 GiB sandbox behaved exactly as
+  specified; nothing observed argues against the planned 2 × (4, 4, 10).
+
+### Verified
+
+The run finished in ~40 s of wall clock. VPS load average went 0.62 → 1.80 → back to
+0.76 (the spike container peaked at ~98% of *one* core during the OCR section only), so
+the measurement was nowhere near the sustained 100%-across-both-cores that triggered
+Hostinger's throttle twice before. 800 MB moved, every download byte-verified against
+what was uploaded. No Daytona resources leaked: sandbox listing is empty and the spike
+snapshot is deleted. The credentials file copied to the VPS for the run was shredded and
+`/root/pdfkit-spike/` removed; the raw log is left at `/root/pdfkit-spike-run.log`.
+
+**Not done:** anything at realistic document scale. Every compute number above comes from
+a 6-page, 266 KB generated scan — enough to answer "is a sandbox core faster than a VPS
+core", not enough to predict a 50-page 50 MB scan, which is precisely the case the
+feature exists for. Re-measure that once Phase 2 can run a real job end to end.
 
 ## Phase 9 — Admin dashboard at `/admin` (2026-09-20)
 

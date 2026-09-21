@@ -1,0 +1,147 @@
+name: Build the Daytona toolchain snapshot
+
+# The `pdfkit-toolchain` snapshot is what an offloaded batch runs inside
+# (backend/app/services/offload.py). Daytona's stock snapshots carry no
+# Ghostscript, Tesseract or OCRmyPDF, so without this there is nothing for
+# `app/tools/remote_job.py` to run on at all.
+#
+# It used to be hand-built, once, by a person. That meant a `uv.lock` bump
+# silently ran a stale toolchain in every sandbox until someone remembered to
+# rebuild it, with no way to tell from the running system that it had gone
+# stale. So: the snapshot's NAME IS ITS CONTENT — `pdfkit-toolchain-<12 hex>`
+# over `backend/Dockerfile`, `backend/pyproject.toml` and `backend/uv.lock`,
+# computed by `scripts/build_snapshot.py --print-name` so a human rebuilding
+# by hand and this workflow cannot disagree about what to call the result.
+#
+# Daytona builds the image itself, from `buildInfo.dockerfileContent` — the
+# `toolchain` stage of backend/Dockerfile, flattened by the script. There is
+# no local `docker build` here, and no platform to choose: Daytona's runners
+# are linux/amd64, which is also what the VPS runs.
+#
+# NOTHING HERE UPDATES `DAYTONA_SNAPSHOT`. That is deliberate, and the summary
+# at the end of a successful build says so: a dependency bump that has not
+# been snapshotted yet should fail to create a sandbox and fall back to the
+# VPS — which offload.py already treats as an ordinary failure — rather than
+# silently run a toolchain that no longer matches the lockfile because a name
+# pointing at "latest" moved under a running deploy.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    # Only the three files that change what ends up inside the image. Not
+    # `backend/app/**`: application code is uploaded per job, which is the
+    # whole reason a snapshot goes stale only when the toolchain moves.
+    paths:
+      - backend/Dockerfile
+      - backend/pyproject.toml
+      - backend/uv.lock
+      - .github/workflows/snapshot.yml
+  schedule:
+    # Daytona deactivates a snapshot after roughly two weeks unused, and a
+    # deactivated snapshot cannot create a sandbox. Weekly, so one missed run
+    # is still inside the window. Monday 04:00 UTC — clear of the VPS's own
+    # Sunday-03:00 Docker cleanup cron.
+    - cron: "0 4 * * 1"
+
+concurrency:
+  # Two pushes in a row must not race to create the same snapshot name.
+  group: daytona-snapshot
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  build:
+    # The cron only needs the warm job below; building on a schedule would
+    # rebuild nothing (the name is the content) but still cost a run.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.name.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # `--no-project` throughout: the script needs `daytona` and `app/config`
+      # (which imports nothing but `os`), not the backend's full dependency
+      # set — ocrmypdf and friends would be minutes of install for nothing.
+      - name: Compute the snapshot name from the toolchain's contents
+        id: name
+        run: |
+          set -euo pipefail
+          name=$(uv run --no-project python scripts/build_snapshot.py --print-name)
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "Snapshot name: ${name}"
+
+      # --skip-existing makes a re-run on unchanged inputs a no-op rather than
+      # an error: the name is the content, so a snapshot already carrying it
+      # was built from exactly these three files.
+      - name: Build the snapshot
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with daytona python scripts/build_snapshot.py \
+            --name "${{ steps.name.outputs.name }}" --skip-existing
+
+      # The same spot-check the original hand-built snapshot got: a throwaway
+      # sandbox, and every binary an offloaded job actually shells out to.
+      # This is the first point where the automated pipeline's own output is
+      # what runs, so it is checked rather than assumed.
+      - name: Verify it can do the work
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with daytona python scripts/build_snapshot.py \
+            --name "${{ steps.name.outputs.name }}" --verify
+
+      - name: Say what an operator has to do next
+        run: |
+          {
+            echo "### Snapshot \`${{ steps.name.outputs.name }}\` is built and verified"
+            echo
+            echo "**This is not live yet.** Nothing here touched the running app."
+            echo
+            echo "To use it, set this in the Coolify environment and redeploy:"
+            echo
+            echo '```'
+            echo "DAYTONA_SNAPSHOT=${{ steps.name.outputs.name }}"
+            echo '```'
+            echo
+            echo "Until then the backend keeps using whatever \`DAYTONA_SNAPSHOT\`"
+            echo "already names. If that snapshot no longer exists, sandbox creation"
+            echo "fails and every batch falls back to the VPS — correct results, just"
+            echo "slower, and visible as \`provision failed\` in the backend log."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  warm:
+    # Cron only. A dispatch or a push already runs `build`, whose --verify step
+    # creates a sandbox from the snapshot — that is the same "recent use" this
+    # job exists to manufacture, so doing both would pay for it twice.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Recomputed rather than taken from `build`, because on the cron path
+      # `build` did not run. Same three files, same function, same answer.
+      - name: Keep the current snapshot active
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: |
+          set -euo pipefail
+          name=$(uv run --no-project python scripts/build_snapshot.py --print-name)
+          echo "Warming ${name}"
+          uv run --no-project --with daytona python scripts/build_snapshot.py \
+            --name "${name}" --warm

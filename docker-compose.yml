@@ -71,6 +71,29 @@ services:
       # Safe to be this broad because the service uses `expose`, not `ports`: it
       # is only reachable through the proxy on the internal network.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12,10.0.0.0/8}
+      # Daytona offload. Off unless DAYTONA_ENABLED is true, in which case the
+      # CPU-heavy operations run in a per-request sandbox instead of on this
+      # box. Everything here is inert while it is false, so an unset key is
+      # not a misconfiguration - it is the default posture.
+      DAYTONA_ENABLED: ${DAYTONA_ENABLED:-false}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      DAYTONA_API_URL: ${DAYTONA_API_URL:-https://app.daytona.io/api}
+      DAYTONA_TARGET: ${DAYTONA_TARGET:-eu}
+      # Content-hashed and built by .github/workflows/snapshot.yml; set by
+      # hand from that run's summary, never automatically. See .env.example.
+      DAYTONA_SNAPSHOT: ${DAYTONA_SNAPSHOT:-pdfkit-toolchain}
+      DAYTONA_OPERATIONS: ${DAYTONA_OPERATIONS:-ocr,word,markdown,compress}
+      DAYTONA_MAX_SANDBOXES: ${DAYTONA_MAX_SANDBOXES:-2}
+      DAYTONA_SANDBOX_CPU: ${DAYTONA_SANDBOX_CPU:-4}
+      DAYTONA_SANDBOX_MEMORY_GB: ${DAYTONA_SANDBOX_MEMORY_GB:-4}
+      DAYTONA_SANDBOX_DISK_GB: ${DAYTONA_SANDBOX_DISK_GB:-10}
+      DAYTONA_MIN_FILES: ${DAYTONA_MIN_FILES:-2}
+      DAYTONA_MIN_BYTES: ${DAYTONA_MIN_BYTES:-5242880}
+      DAYTONA_PROVISION_TIMEOUT_SECONDS: ${DAYTONA_PROVISION_TIMEOUT_SECONDS:-150}
+      DAYTONA_OVERHEAD_SECONDS: ${DAYTONA_OVERHEAD_SECONDS:-90}
+      DAYTONA_AUTO_STOP_MINUTES: ${DAYTONA_AUTO_STOP_MINUTES:-5}
+      DAYTONA_TTL_MINUTES: ${DAYTONA_TTL_MINUTES:-30}
+      DAYTONA_FALLBACK_LOCAL: ${DAYTONA_FALLBACK_LOCAL:-true}
     tmpfs:
       # A tmpfs mount masks whatever ownership the image gave this path, so it
       # has to be handed to the non-root `pdfkit` user (uid 1001) explicitly —

@@ -11,10 +11,11 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from app import config
 from app.config import MAX_OCR_LANGUAGES
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
-from app.services import progress
+from app.services import offload, progress
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import run, sanitise
 
@@ -236,6 +237,15 @@ async def ocr_to_path(
             "ocrmypdf",
             "-l",
             "+".join(languages),
+            # Never let OCRmyPDF size its own page-parallelism. It asks the
+            # process how many cores it has, and inside a Daytona sandbox that
+            # answer is the *runner's* 48 against a real 4-CPU quota — 48
+            # workers thrashing in four cores. MAX_CONCURRENT_JOBS is the right
+            # number in both places this runs: locally it is already the VPS's
+            # job-concurrency ceiling, and in a sandbox the orchestrator sets
+            # it to that sandbox's own vCPU count before exec'ing the shim.
+            "--jobs",
+            str(config.MAX_CONCURRENT_JOBS),
             # Reports per-page progress on stderr. --quiet stays: it suppresses
             # logging, not this, and there is no flag that would make OCRmyPDF
             # report progress into a pipe. See app/tools/ocr_progress.py.
@@ -281,6 +291,16 @@ async def ocr_one(
 
 
 async def ocr(batch: UploadBatch, languages: list[str]) -> list[OutputFile]:
+    """OCR every file in the batch, in a sandbox if one is worth provisioning.
+
+    The first two lines are the whole of this tool's opt-in to the offload
+    path; ``None`` means "not this time" and everything below runs exactly as
+    it did before the feature existed. See :mod:`app.services.offload`.
+    """
+    offloaded = await offload.maybe_offload("ocr", batch, {"languages": languages})
+    if offloaded is not None:
+        return offloaded
+
     workspace = batch.workspace("out")
     scratch = batch.workspace("ocr-tmp")
     publisher = progress.current()

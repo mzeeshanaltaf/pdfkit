@@ -27,7 +27,7 @@ from fastapi import HTTPException
 
 from app.deps import SavedUpload, UploadBatch
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
-from app.services import progress
+from app.services import offload, progress
 from app.services.ocr import ocr_to_path
 from app.services.responses import DOCX_MEDIA_TYPE, OutputFile, convert_name
 from app.services.runner import run, sanitise
@@ -157,6 +157,19 @@ async def to_word_one(
 async def to_word(
     batch: UploadBatch, ocr_mode: str, languages: list[str]
 ) -> list[OutputFile]:
+    """Convert every file in the batch, in a sandbox if one is worth provisioning.
+
+    The first three lines are this tool's whole opt-in to the offload path;
+    ``None`` means "not this time" and everything below runs exactly as it did
+    before the feature existed. See :mod:`app.services.offload`.
+    """
+    if (
+        offloaded := await offload.maybe_offload(
+            "word", batch, {"ocr_mode": ocr_mode, "languages": languages}
+        )
+    ) is not None:
+        return offloaded
+
     workspace = batch.workspace("out")
     scratch = batch.workspace("convert-tmp")
     publisher = progress.current()

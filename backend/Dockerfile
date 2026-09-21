@@ -44,6 +44,21 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
+# --- toolchain: what the Daytona `pdfkit-toolchain` snapshot is built from ----
+# `base` is already exactly the right layer - every apt package plus the locked
+# dependency set, and no application code, which is what lets `app/` be uploaded
+# per job instead of being baked in and going stale.
+#
+# The ENTRYPOINT is the only addition, and it has to live here rather than in
+# the snapshot request: Daytona rejects a top-level `entrypoint` alongside a
+# `buildInfo` ("Cannot specify an entrypoint when using a build info entry"),
+# and a plain python:3.12-slim container with no long-running process drops
+# into a REPL and exits before anything can be uploaded to it.
+#
+# Built into a snapshot by scripts/build_snapshot.py; Phase 5 turns that into CI.
+FROM base AS toolchain
+ENTRYPOINT ["sleep", "infinity"]
+
 # --- test: dev dependencies and the suite, never shipped ---------------------
 # Built with `--target test`; see the `backend-tests` service in docker-compose.
 FROM base AS test

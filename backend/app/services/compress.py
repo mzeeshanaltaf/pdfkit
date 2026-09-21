@@ -41,7 +41,7 @@ from pypdf import PdfReader
 
 from app.config import timeout_for
 from app.deps import SavedUpload, UploadBatch
-from app.services import fonts, progress, streams
+from app.services import fonts, offload, progress, streams
 from app.services.errors import encrypted_input, ensure_readable, mentions_password
 from app.services.responses import OutputFile, derive_name
 from app.services.runner import job_slot, run
@@ -562,6 +562,32 @@ async def compress_one(
 
 
 async def compress(batch: UploadBatch, level: str) -> CompressionResult:
+    """Compress every file in the batch, in a sandbox if one is worth provisioning.
+
+    The head is this tool's opt-in to the offload path, and it is the only one
+    of the four that is more than "return the list": ``maybe_offload`` hands
+    back ``list[OutputFile]`` like it does for every operation, so the sizes
+    this tool reports are re-derived here exactly as the local path derives
+    them below — from ``upload.size``, known before any processing, and the
+    bytes that actually arrived on disk. See :mod:`app.services.offload`.
+    """
+    if (
+        outputs := await offload.maybe_offload("compress", batch, {"level": level})
+    ) is not None:
+        return CompressionResult(
+            outputs=outputs,
+            original_size=sum(upload.size for upload in batch.files),
+            result_size=sum(output.path.stat().st_size for output in outputs),
+            files=[
+                FileStat(
+                    name=upload.original_name,
+                    original_size=upload.size,
+                    result_size=output.path.stat().st_size,
+                )
+                for upload, output in zip(batch.files, outputs, strict=True)
+            ],
+        )
+
     workspace = batch.workspace("out")
     publisher = progress.current()
 

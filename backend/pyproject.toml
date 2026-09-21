@@ -22,6 +22,12 @@ dependencies = [
     # separate process, the same posture the image already has with Ghostscript.
     # That shim exists because the stock library drops inter-word spaces; see it.
     "pdf2docx>=0.5.13",
+    # Daytona offload (app/services/offload.py). Pinned rather than floated:
+    # this phase verified the two API shapes it depends on against exactly this
+    # release - session exec with run_async returning a command id, and
+    # get_session_command_logs_async delivering stdout and stderr as separate
+    # incremental callbacks. Neither is guaranteed by semver.
+    "daytona==0.214.0",
 ]
 
 [dependency-groups]
