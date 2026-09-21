@@ -1,8 +1,13 @@
 "use client";
 
-import { Cloud } from "lucide-react";
+import { Cloud, Server } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import type { ToolPlacement } from "./types";
@@ -14,21 +19,47 @@ interface PlacementBadgeProps {
   className?: string;
 }
 
+const LABEL: Record<ToolPlacement, Record<PlacementBadgeProps["tense"], string>> = {
+  server: {
+    running: "Running on our server",
+    done: "Processed on our server",
+  },
+  sandbox: {
+    running: "Running in a secure cloud sandbox",
+    done: "Processed in a secure cloud sandbox",
+  },
+};
+
 /**
- * Shared by ProcessingView and ResultView. Nothing at all for `"server"` or `null`: the
- * VPS is the unremarkable default, and a badge for it would be noise on ten of the
- * twelve tools — this only ever shows up for the four that can offload. Renders nothing
- * (not even a wrapper), so a caller's own spacing never has to account for an empty node.
+ * Shared by ProcessingView and ResultView. A visible label that showed up for "sandbox"
+ * and nothing at all for "server" read as a glitch — why does this message appear
+ * sometimes and not others? An icon for both placements makes the split legible instead:
+ * cloud for a Daytona sandbox, server for the VPS. The full explanation lives in each
+ * offload-capable tool's FAQ, so this stays a tooltip rather than permanent copy. Renders
+ * nothing for `null` (browser tools, or a backend tool that hasn't said yet).
  */
 export function PlacementBadge({ placement, tense, className }: PlacementBadgeProps) {
-  if (placement !== "sandbox") return null;
+  if (placement === null) return null;
+
+  const Icon = placement === "sandbox" ? Cloud : Server;
+  const label = LABEL[placement][tense];
 
   return (
-    <Badge variant="secondary" className={cn("gap-1.5", className)}>
-      <Cloud className="size-3.5" aria-hidden />
-      {tense === "running"
-        ? "Running in a secure cloud sandbox"
-        : "Processed in a secure cloud sandbox"}
-    </Badge>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className={cn(
+              "inline-flex size-7 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground",
+              className,
+            )}
+          >
+            <Icon className="size-3.5" aria-hidden />
+            <span className="sr-only">{label}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }

@@ -152,4 +152,17 @@
   .thumb-surface {
     contain: paint;
   }
+
+  /*
+   * Scrollable-but-not-overflowing containers (the admin tab strip) still get a
+   * browser-drawn scrollbar with its own arrow buttons on some platforms. Hide the
+   * scrollbar chrome; the container still scrolls by touch/wheel if it ever does overflow.
+   */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }

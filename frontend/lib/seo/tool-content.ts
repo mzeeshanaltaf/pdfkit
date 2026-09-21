@@ -277,6 +277,10 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
         q: "Will the text still be selectable afterwards?",
         a: "Yes. Compression targets images and redundant objects, not the text layer.",
       },
+      {
+        q: "What do the server and cloud icons mean while a file is processing?",
+        a: "This job usually runs on our own VPS, shown with a server icon. When the VPS is busy, it can be offloaded instead to a temporary, isolated cloud sandbox — shown with a cloud icon — that is destroyed once the job finishes. Either way the file is processed and deleted within the same request; the icon only tells you where the work happened, not whether it succeeded.",
+      },
     ],
   },
 
@@ -361,6 +365,10 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
         q: "Is my document kept on the server?",
         a: "No. It is converted and deleted within the same request. There is no account and nothing is stored.",
       },
+      {
+        q: "What do the server and cloud icons mean while a file is processing?",
+        a: "This job usually runs on our own VPS, shown with a server icon. When the VPS is busy, it can be offloaded instead to a temporary, isolated cloud sandbox — shown with a cloud icon — that is destroyed once the job finishes. Either way the file is converted and deleted within the same request; the icon only tells you where the work happened, not whether it succeeded.",
+      },
     ],
   },
 
@@ -403,6 +411,10 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
         q: "Is my file uploaded?",
         a: "Yes, this tool needs the server. The file is converted and deleted within the same request, and nothing is retained.",
       },
+      {
+        q: "What do the server and cloud icons mean while a file is processing?",
+        a: "This job usually runs on our own VPS, shown with a server icon. When the VPS is busy, it can be offloaded instead to a temporary, isolated cloud sandbox — shown with a cloud icon — that is destroyed once the job finishes. Either way the file is converted and deleted within the same request; the icon only tells you where the work happened, not whether it succeeded.",
+      },
     ],
   },
 
@@ -444,6 +456,10 @@ export const TOOL_SEO: Record<ToolId, ToolSeo> = {
       {
         q: "How accurate is it?",
         a: "Clean, straight, high-resolution scans read very well. Low-resolution, skewed or handwritten pages are much less reliable.",
+      },
+      {
+        q: "What do the server and cloud icons mean while a file is processing?",
+        a: "This job usually runs on our own VPS, shown with a server icon. When the VPS is busy, it can be offloaded instead to a temporary, isolated cloud sandbox — shown with a cloud icon — that is destroyed once the job finishes. Either way the file is processed and deleted within the same request; the icon only tells you where the work happened, not whether it succeeded.",
       },
     ],
   },

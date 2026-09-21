@@ -127,10 +127,10 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
       </div>
 
       <Tabs defaultValue="overview" className="mt-8">
-        <div className="overflow-x-auto">
+        <div className="no-scrollbar overflow-x-auto">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="placement">Placement &amp; sandbox</TabsTrigger>
+            <TabsTrigger value="placement">Placement &amp; Sandbox</TabsTrigger>
             <TabsTrigger value="runs">Runs &amp; failures</TabsTrigger>
           </TabsList>
         </div>
@@ -146,12 +146,12 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
         </TabsContent>
 
         <TabsContent value="placement">
-          <Section title="Browser vs server" description="The privacy claim, quantified.">
+          <Section title="Browser vs Server" description="The privacy claim, quantified.">
             <RuntimeSplit rows={runtimeSplit} />
           </Section>
 
           <Section
-            title="VPS vs sandbox"
+            title="VPS vs Sandbox"
             description="Of the backend runs above, how much of that work stayed on the VPS versus offloaded to a Daytona sandbox."
           >
             <PlacementSplit rows={placementSplit} />

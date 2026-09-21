@@ -4,8 +4,10 @@
  *
  * There is no cost or history here — `GET /organizations/{orgId}/usage` is the one endpoint
  * Daytona's public API exposes for this, and it returns only a live snapshot
- * (`regionUsage[]`, each with `totalCpuQuota`/`currentCpuUsage` and the memory/disk
- * equivalents). Everything about spend and per-operation attribution comes from
+ * (`regionUsage[]`, each with `regionId`, `totalCpuQuota`/`currentCpuUsage` and the
+ * memory/disk equivalents — there is no field literally named `region`, which is what used
+ * to make this strip always print "(?)"). Everything about spend and per-operation
+ * attribution comes from
  * `sandbox_runs` instead (see `queries.ts` and `daytona-pricing.ts`) — this module answers a
  * different question, "is there room right now".
  *
@@ -74,7 +76,7 @@ export async function fetchDaytonaUsage(): Promise<DaytonaUsage | null> {
   if (!region) return null;
 
   return {
-    region: typeof region.region === "string" ? region.region : "?",
+    region: typeof region.regionId === "string" ? region.regionId : "?",
     cpu: { used: num(region.currentCpuUsage), quota: num(region.totalCpuQuota) },
     ramGb: { used: num(region.currentMemoryUsage), quota: num(region.totalMemoryQuota) },
     diskGb: { used: num(region.currentDiskUsage), quota: num(region.totalDiskQuota) },
