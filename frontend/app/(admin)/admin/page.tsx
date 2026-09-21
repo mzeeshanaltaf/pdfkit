@@ -5,17 +5,24 @@ import type { ReactNode } from "react";
 
 import { DayChart } from "@/components/admin/day-chart";
 import { FailuresTable } from "@/components/admin/failures-table";
-import { formatCount, formatDuration, formatPercent } from "@/components/admin/format";
+import {
+  formatCount,
+  formatDuration,
+  formatPercent,
+  formatUsd,
+} from "@/components/admin/format";
 import { NotConfiguredPanel } from "@/components/admin/not-configured-panel";
 import { RangeSelector } from "@/components/admin/range-selector";
 import { RuntimeSplit } from "@/components/admin/runtime-split";
 import { RunsTable } from "@/components/admin/runs-table";
+import { SandboxUsage } from "@/components/admin/sandbox-usage";
 import { StatTile } from "@/components/admin/stat-tile";
 import { ToolBarList } from "@/components/admin/tool-bar-list";
 import { Button } from "@/components/ui/button";
 import { ADMIN_COOKIE_NAME, verifySession } from "@/lib/admin/session";
 import { statsEnabled } from "@/lib/db";
 import { formatBytes } from "@/lib/format";
+import { fetchDaytonaUsage } from "@/lib/stats/daytona-usage";
 import { getDashboardData, isStatsRange, toolBreakdownWithZeros } from "@/lib/stats/queries";
 
 export const metadata: Metadata = {
@@ -76,8 +83,18 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
     );
   }
 
-  const { overview, toolBreakdown, runtimeSplit, failures, recentRuns, runsPerDay } = data;
+  const {
+    overview,
+    toolBreakdown,
+    runtimeSplit,
+    failures,
+    recentRuns,
+    runsPerDay,
+    sandboxOverview,
+    sandboxByOperation,
+  } = data;
   const breakdown = toolBreakdownWithZeros(toolBreakdown);
+  const daytonaUsage = await fetchDaytonaUsage();
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
@@ -112,6 +129,53 @@ export default async function AdminDashboardPage({ searchParams }: Props) {
 
       <Section title="Most-used tools">
         <ToolBarList rows={breakdown} totalRuns={overview.totalRuns} />
+      </Section>
+
+      <Section
+        title="Sandbox usage"
+        description="What offloaded runs cost, reconstructed from each sandbox's own lifetime — not Daytona's Spending dashboard, which lags real consumption by up to 48 hours."
+      >
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <StatTile label="Sandboxes" value={formatCount(sandboxOverview.sandboxes)} />
+          <StatTile label="Sandbox time" value={formatDuration(sandboxOverview.aliveSeconds * 1000)} />
+          <StatTile label="CPU-hours" value={sandboxOverview.cpuHours.toFixed(2)} />
+          <StatTile label="RAM GB-hours" value={sandboxOverview.ramGbHours.toFixed(2)} />
+          <StatTile label="Disk GB-hours" value={sandboxOverview.diskGbHours.toFixed(2)} />
+          <StatTile label="Est. cost" value={formatUsd(sandboxOverview.estimatedCostUsd)} />
+        </div>
+
+        <h3 className="mt-6 text-sm font-medium text-muted-foreground">By operation</h3>
+        <div className="mt-3">
+          <SandboxUsage rows={sandboxByOperation} />
+        </div>
+
+        <p className="mt-4 text-xs text-muted-foreground">
+          {daytonaUsage ? (
+            <>
+              Live now: {formatCount(Math.round(daytonaUsage.cpu.used))}/
+              {formatCount(Math.round(daytonaUsage.cpu.quota))} vCPU ·{" "}
+              {formatCount(Math.round(daytonaUsage.ramGb.used))}/
+              {formatCount(Math.round(daytonaUsage.ramGb.quota))} GiB RAM ·{" "}
+              {formatCount(Math.round(daytonaUsage.diskGb.used))}/
+              {formatCount(Math.round(daytonaUsage.diskGb.quota))} GiB disk ({daytonaUsage.region})
+            </>
+          ) : (
+            "Live quota unavailable."
+          )}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Cost is an estimate derived from each sandbox&apos;s own lifetime, not a bill — cross-check
+          against{" "}
+          <a
+            href="https://app.daytona.io/dashboard/billing/spending"
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            Daytona&apos;s Spending page
+          </a>
+          , which lags real consumption by up to 48 hours.
+        </p>
       </Section>
 
       <Section title="Browser vs server" description="The privacy claim, quantified.">

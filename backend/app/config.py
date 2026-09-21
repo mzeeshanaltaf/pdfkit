@@ -185,3 +185,13 @@ def remote_timeout_for(operation: str) -> int:
     lifecycle and the transfer either side of it.
     """
     return timeout_for(operation) + DAYTONA_OVERHEAD_SECONDS
+
+
+# --- sandbox telemetry --------------------------------------------------------
+#
+# One record per shard, posted to the Next app's stats Postgres so the admin
+# dashboard can report Daytona's own cost without depending on its Spending
+# dashboard, which lags real consumption by up to 48 hours. Off unless both are
+# set — see app/services/sandbox_stats.py.
+STATS_INGEST_URL = os.getenv("STATS_INGEST_URL", "")
+STATS_INGEST_SECRET = os.getenv("STATS_INGEST_SECRET", "")

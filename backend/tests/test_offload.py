@@ -34,13 +34,14 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
 from app import config
 from app.deps import SavedUpload, UploadBatch
 from app.services import compress as compress_service
-from app.services import errors, offload, placement, progress
+from app.services import errors, offload, placement, progress, sandbox_stats
 from app.services import markdown as markdown_service
 from app.services import ocr as ocr_service
 from app.services import word as word_service
@@ -1832,6 +1833,191 @@ async def test_open_sandboxes_counts_up_while_shards_run_and_back_down_after(
     # Back to zero once the shards have handed their sandboxes back, whatever
     # the batch's own verdict was.
     assert offload.open_sandboxes() == 0
+
+
+# --- sandbox telemetry --------------------------------------------------------
+
+
+@pytest.fixture
+def stats_ingest(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Captures every ``sandbox_stats.record`` call instead of posting anywhere."""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(sandbox_stats, "record", lambda **kwargs: calls.append(kwargs))
+    return calls
+
+
+async def test_sandbox_telemetry_is_built_with_the_right_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    stats_ingest: list[dict[str, Any]],
+) -> None:
+    """One record per shard, naming its own sandbox and a plausible clock."""
+    monkeypatch.setattr(config, "DAYTONA_MAX_SANDBOXES", 2)
+    use(
+        monkeypatch,
+        ScriptedPool(
+            lines=[("stdout", result_line("00-a.pdf", "out.pdf", 13))],
+            files={f"{offload.WORK}/out/out.pdf": b"%PDF-1.7 done"},
+        ),
+    )
+    batch = make_batch(tmp_path, {"a.pdf": b"%PDF-aaaa", "b.pdf": b"%PDF-bbbb"})
+
+    await offload.maybe_offload("ocr", batch, {})
+
+    assert len(stats_ingest) == 2
+    by_shard = {call["shard_index"]: call for call in stats_ingest}
+    assert set(by_shard) == {0, 1}
+    assert by_shard[0]["sandbox_id"] == "scripted-0"
+    assert by_shard[1]["sandbox_id"] == "scripted-1"
+    for call in stats_ingest:
+        assert call["operation"] == "ocr"
+        assert call["outcome"] == "ok"
+        assert call["shard_total"] == 2
+        assert call["file_count"] == 1
+        assert call["alive_seconds"] >= 0
+        assert call["bytes_up"] == len(b"%PDF-aaaa")
+        assert call["bytes_down"] == 13
+
+
+async def test_sandbox_telemetry_names_a_document_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    stats_ingest: list[dict[str, Any]],
+) -> None:
+    """A file the services genuinely cannot process is ``failed``, not ``abandoned``."""
+    use(
+        monkeypatch,
+        ScriptedPool(
+            lines=[
+                (
+                    "stdout",
+                    json.dumps(
+                        {"status": "error", "http_status": 422, "detail": "password_required"}
+                    ),
+                )
+            ]
+        ),
+    )
+    batch = make_batch(tmp_path, {"locked.pdf": build_text_pdf()})
+
+    with pytest.raises(HTTPException):
+        await offload.maybe_offload("compress", batch, {})
+
+    [call] = stats_ingest
+    assert call["outcome"] == "failed"
+
+
+async def test_sandbox_telemetry_names_an_abandoned_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    stats_ingest: list[dict[str, Any]],
+) -> None:
+    """A shard the shim never finished is ``abandoned`` — an infrastructure reason."""
+    use(
+        monkeypatch,
+        ScriptedPool(
+            lines=[("stderr", json.dumps({"status": "failed", "error": "boom"}))],
+            exit_code=1,
+        ),
+    )
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    assert await offload.maybe_offload("compress", batch, {}) is None
+
+    [call] = stats_ingest
+    assert call["outcome"] == "abandoned"
+
+
+async def test_sandbox_telemetry_names_a_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: None,
+    stats_ingest: list[dict[str, Any]],
+) -> None:
+    """A client that hangs up mid-batch is ``cancelled``, for every shard still open."""
+    monkeypatch.setattr(offload, "WATCHDOG_SECONDS", 0.01)
+    gone = False
+
+    async def client_gone() -> bool:
+        return gone
+
+    progress.bind(progress.NULL, client_gone)
+    use(monkeypatch, ScriptedPool(lines=[("stderr", frame(1, 2, 10.0))], pause=0.02))
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf(), "b.pdf": build_text_pdf()})
+
+    async def hang_up() -> None:
+        nonlocal gone
+        await asyncio.sleep(0.05)
+        gone = True
+
+    hanging_up = asyncio.create_task(hang_up())
+    with pytest.raises(HTTPException):
+        await offload.maybe_offload("compress", batch, {})
+    await hanging_up
+
+    assert len(stats_ingest) == 2
+    assert {call["outcome"] for call in stats_ingest} == {"cancelled"}
+
+
+async def test_telemetry_is_off_without_both_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset either half of the pair and nothing is even attempted."""
+    monkeypatch.setattr(config, "STATS_INGEST_URL", "")
+    monkeypatch.setattr(config, "STATS_INGEST_SECRET", "")
+    called = False
+
+    async def fail_if_called(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("must not post while telemetry is disabled")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fail_if_called)
+
+    sandbox_stats.record(
+        sandbox_id="sbx-1",
+        operation="ocr",
+        outcome="ok",
+        shard_index=0,
+        shard_total=1,
+        file_count=1,
+        alive_seconds=1.0,
+        bytes_up=1,
+        bytes_down=1,
+    )
+    await asyncio.sleep(0)
+    assert not called
+
+
+async def test_a_posting_failure_cannot_fail_the_batch(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``record`` fires a detached task; a broken endpoint is a log line, not a raise."""
+    monkeypatch.setattr(config, "STATS_INGEST_URL", "http://example.invalid/stats/sandbox")
+    monkeypatch.setattr(config, "STATS_INGEST_SECRET", "secret")
+
+    async def broken_post(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", broken_post)
+
+    with caplog.at_level(logging.WARNING):
+        sandbox_stats.record(
+            sandbox_id="sbx-1",
+            operation="ocr",
+            outcome="ok",
+            shard_index=0,
+            shard_total=1,
+            file_count=1,
+            alive_seconds=1.2,
+            bytes_up=10,
+            bytes_down=20,
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    assert "could not post sandbox telemetry" in caplog.text
 
 
 # --- the live one ------------------------------------------------------------

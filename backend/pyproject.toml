@@ -28,12 +28,16 @@ dependencies = [
     # get_session_command_logs_async delivering stdout and stderr as separate
     # incremental callbacks. Neither is guaranteed by semver.
     "daytona==0.214.0",
+    # Posts sandbox telemetry to the Next app (app/services/sandbox_stats.py).
+    # Already resolved transitively via `daytona`, so this is a declaration,
+    # not a new resolution — but relying on a transitive is exactly what
+    # breaks silently on a pin bump.
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
 ]
 
 [tool.pytest.ini_options]

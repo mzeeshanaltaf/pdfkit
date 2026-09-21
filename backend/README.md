@@ -163,6 +163,22 @@ wakes a sleeping snapshot and retries **once** before falling back.
    cancellation, and the sharding numbers. See its docstring — and run
    `timings` from the VPS, not a workstation, before believing its verdict.
 
+### Sandbox telemetry
+
+`app/services/sandbox_stats.py` posts one record per shard — sandbox id,
+operation, outcome, alive-time, and the snapshot's fixed cpu/memory/disk — to
+the frontend service's `/api/stats/sandbox`, over the internal Docker network
+(`STATS_INGEST_URL`, default `http://frontend:3000/api/stats/sandbox`),
+authenticated with `STATS_INGEST_SECRET`. That is what lets the admin
+dashboard report Daytona's own cost immediately and per-operation, instead of
+through Daytona's Spending dashboard, which lags real consumption by up to 48
+hours and carries no per-operation breakdown at all.
+
+Off unless both env vars are set, fired as a detached task from
+`offload._run_shard`'s own `finally`, and built on the same contract as
+`progress.py`: it must never be able to fail a conversion. A slow or
+unreachable stats endpoint is a WARNING log line, nothing more.
+
 ## Tests
 
 The suite needs Ghostscript, qpdf, Tesseract, poppler, pdf2docx and anydoc, so it runs in its own

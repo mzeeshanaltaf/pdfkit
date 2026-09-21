@@ -27,3 +27,14 @@ export function formatPercent(numerator: number, denominator: number): string {
 export function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
+
+/** An estimate, not a bill — extra precision below $1 so a handful of cheap sandboxes
+ *  doesn't round to "$0.00". */
+export function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  }).format(value);
+}

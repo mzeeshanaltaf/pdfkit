@@ -39,6 +39,20 @@ services:
       # Salts the daily-rotating visitor hash stats rows carry instead of an IP address.
       STATS_SALT: ${STATS_SALT:-}
       STATS_RETENTION_DAYS: ${STATS_RETENTION_DAYS:-365}
+      # Shared with the backend's STATS_INGEST_SECRET above: authenticates the
+      # backend's sandbox-telemetry POSTs to this service's own /api/stats/sandbox.
+      STATS_INGEST_SECRET: ${STATS_INGEST_SECRET:-}
+      # Read-only Daytona API access for the admin dashboard's "live now" quota
+      # strip (GET /organizations/{id}/usage) — the same account and key the
+      # backend's DAYTONA_API_KEY names, reused here for a different call.
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      DAYTONA_API_URL: ${DAYTONA_API_URL:-https://app.daytona.io/api}
+      # Overrides Daytona's published per-second rates the cost estimate is
+      # built from (frontend/lib/stats/daytona-pricing.ts). Unset, the built-in
+      # defaults apply — only needed if Daytona's pricing changes.
+      DAYTONA_PRICE_CPU_HOUR: ${DAYTONA_PRICE_CPU_HOUR:-}
+      DAYTONA_PRICE_RAM_GB_HOUR: ${DAYTONA_PRICE_RAM_GB_HOUR:-}
+      DAYTONA_PRICE_DISK_GB_HOUR: ${DAYTONA_PRICE_DISK_GB_HOUR:-}
     depends_on:
       - backend
     restart: unless-stopped
@@ -94,6 +108,12 @@ services:
       DAYTONA_AUTO_STOP_MINUTES: ${DAYTONA_AUTO_STOP_MINUTES:-5}
       DAYTONA_TTL_MINUTES: ${DAYTONA_TTL_MINUTES:-30}
       DAYTONA_FALLBACK_LOCAL: ${DAYTONA_FALLBACK_LOCAL:-true}
+      # Sandbox telemetry: one record per shard, posted to the frontend service
+      # over the internal Docker network so the admin dashboard can report
+      # Daytona's own cost without depending on its Spending dashboard (which
+      # lags real consumption by up to 48 hours). Off unless both are set.
+      STATS_INGEST_URL: ${STATS_INGEST_URL:-http://frontend:3000/api/stats/sandbox}
+      STATS_INGEST_SECRET: ${STATS_INGEST_SECRET:-}
     tmpfs:
       # A tmpfs mount masks whatever ownership the image gave this path, so it
       # has to be handed to the non-root `pdfkit` user (uid 1001) explicitly —

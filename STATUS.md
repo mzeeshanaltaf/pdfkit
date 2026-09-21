@@ -1,8 +1,100 @@
 # Status
 
-Last updated: 2026-09-21 (Phase 11 part 2 — offload visibility: gate logging and /health)
+Last updated: 2026-09-21 (Phase 11 part 3 — offload visibility: sandbox telemetry)
 
 ## Current phase
+
+**Phase 11 part 3 is code-complete and unit-tested, not yet verified live.**
+Plan: `docs/phases/phase-11-offload-visibility-phase3.md`. Records PDFKit's own
+sandbox telemetry — count, sandbox-time, CPU/RAM/disk-seconds, estimated cost —
+in the stats Postgres, so the admin dashboard reports Daytona's own cost
+immediately and per-operation instead of through Daytona's Spending dashboard,
+which lags real consumption by up to 48 hours and has no per-operation
+attribution at all. Daytona's public API has no cost or history endpoint (both
+probed live and confirmed 404/401), so the approach is to reconstruct billing
+from what PDFKit already knows: Daytona bills `resource × seconds alive`, and
+`offload._run_shard` is the one place that knows a sandbox's whole lifetime.
+
+**The backend has no database, so it POSTs fire-and-forget to a new Next
+route** — `app/services/sandbox_stats.py`, modelled on `progress.py`'s
+contract: it must never be able to fail a conversion. Disabled entirely unless
+both `STATS_INGEST_URL` and `STATS_INGEST_SECRET` are set; every failure past
+that point (a slow endpoint, a dead one, a bug in the module itself) is a
+WARNING log line from a detached `asyncio.Task`, never a raise. `httpx` moved
+from the dev group to the runtime dependencies in `pyproject.toml` — it was
+already resolved as a transitive of `daytona`, so `uv lock` needed no network
+access to re-resolve it, but relying on a transitive is exactly what breaks
+silently on a pin bump.
+
+**`offload._run_shard` now tracks each shard's own outcome and lifetime.** A
+`provisioned_at` clock starts once `provision()` returns and stops just before
+`dispose()` — the same window Daytona bills — and the `try/except` around
+`_run_batch` now names the outcome as it unwinds: `_Abandoned` → `abandoned`,
+an HTTPException with status 499 → `cancelled`, any other HTTPException →
+`failed`, a bare `CancelledError` → `cancelled`, anything else → `failed`, and
+falling through untouched → `ok`. Bytes up/down are **approximated** rather
+than threaded through `pool.put`/`pool.get` as new counters: upload bytes come
+from the batch's own upload sizes for that shard's file span, and download
+bytes from the shim's own `result_size` field — the same number `_collect`
+already verifies the download against. `cpu`/`memory_gb`/`disk_gb` are read
+from `config.DAYTONA_SANDBOX_*`, which is what every sandbox this app creates
+actually carries (Daytona fixes a snapshot's resources at build time and
+rejects them on a per-sandbox create).
+
+**The table** (`pdfkit.sandbox_runs`, in `frontend/lib/stats/{schema,schema.sql}.ts`)
+stores the raw facts only — resource-seconds and cost are derived at query
+time from `alive_seconds × cpu|memory_gb|disk_gb` in `queries.ts`, not stored,
+so a rate change in `lib/stats/daytona-pricing.ts` (overridable by
+`DAYTONA_PRICE_CPU_HOUR` / `_RAM_GB_HOUR` / `_DISK_GB_HOUR`) applies uniformly
+instead of baking today's prices into old rows. The same migration pass adds
+`tool_runs.placement` (Phase 4's column; this phase only ships the `alter
+table ... add column if not exists`, since `create table if not exists` will
+not add a column to an already-deployed table).
+
+**The admin dashboard** gained a "Sandbox usage" section, above "Browser vs
+server": six `StatTile`s (sandboxes, sandbox time, CPU/RAM/disk-hours, est.
+cost), a by-operation horizontal-bar breakdown (`sandbox-usage.tsx`, the same
+idiom as `tool-bar-list.tsx`), a "live now" quota strip from
+`GET /organizations/{orgId}/usage` (`lib/stats/daytona-usage.ts`, server-side,
+`cache: "no-store"`, a 5 s `AbortSignal.timeout`, and any failure renders the
+strip as unavailable rather than failing the page — the org id comes from
+`GET /api-keys/current`, cached per process), and a footnote naming the
+estimate as an estimate with a link to Daytona's Spending page.
+
+**No frontend test framework exists in this project** (confirmed: no
+`vitest`/`jest` dependency, no `*.test.ts` file anywhere, and Phase 9's own
+admin-dashboard work was verified the same way) — the plan's "route test for
+`app/api/stats/sandbox/route.ts`" is therefore a manual-verification item
+here, consistent with how every prior frontend-only change in this project has
+been checked (curl / browser, not an automated suite), not a gap specific to
+this phase.
+
+Tests: 7 new in `test_offload.py` — the telemetry record's shape (sandbox id,
+operation, `shard_total`, `file_count`, a non-negative `alive_seconds`, the
+approximated bytes) through a real two-shard run; each of the four outcomes
+(`ok` implicitly by the shape test, `failed` from a document error,
+`abandoned` from an exit-1 shim, `cancelled` from both shards on a client
+hangup); the feature staying off without both env vars, verified by making a
+call to the real endpoint an `AssertionError`; and a broken POST target
+producing only a WARNING log line, never a raise, awaited out via a few
+`asyncio.sleep(0)` ticks since `record()` fires a detached task.
+
+**Verified:** `uv run pytest -q` locally — **224 passed, 70 skipped**, same
+skip set as every prior phase. `uv run ruff check` clean on every changed
+file. `npx tsc --noEmit`, `npx eslint` and `npm run build` all clean on the
+frontend (29 routes now, `/api/stats/sandbox` alongside `/api/stats/event`,
+both dynamic). `docker compose config -q` validates the compose file.
+**Not verified in this environment** (no Docker daemon available here):
+`docker compose run --rm --build backend-tests` (the full toolchain image);
+and everything the plan's own verification section needs a deployed
+environment for — an OCR batch large enough to offload landing a row in
+`pdfkit.sandbox_runs` with a plausible `alive_seconds`; the dashboard actually
+rendering the new tiles/breakdown/live-now strip (or its degraded state);
+cross-checking the estimated cost against Daytona's Spending page 48 hours
+later; and `psql -c "\d pdfkit.sandbox_runs"` / `\d pdfkit.tool_runs` against a
+database that already held rows before this phase.
+
+### Still true from before this part — Phase 11 part 2, and everything before it
 
 **Phase 11 part 2 is code-complete and unit-tested, not yet verified live.**
 Plan: `docs/phases/phase-11-offload-visibility-phase2.md`. The permanent fix

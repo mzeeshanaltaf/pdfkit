@@ -1547,6 +1547,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "firecrawl-anydoc" },
     { name = "fonttools" },
+    { name = "httpx" },
     { name = "ocrmypdf" },
     { name = "pdf2docx" },
     { name = "pillow" },
@@ -1557,7 +1558,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -1567,6 +1567,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "firecrawl-anydoc", specifier = ">=0.2.4" },
     { name = "fonttools", specifier = ">=4.55" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "ocrmypdf", specifier = ">=16.6" },
     { name = "pdf2docx", specifier = ">=0.5.13" },
     { name = "pillow", specifier = ">=11.0" },
@@ -1576,10 +1577,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "pytest", specifier = ">=8.3" },
-]
+dev = [{ name = "pytest", specifier = ">=8.3" }]
 
 [[package]]
 name = "pdfminer-six"

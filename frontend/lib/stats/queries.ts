@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 
 import { withDb } from "@/lib/db";
+import { estimateCostUsd } from "@/lib/stats/daytona-pricing";
 import { TOOLS, type ToolId, type ToolRuntime } from "@/lib/tools";
 
 export type StatsRange = "24h" | "7d" | "30d" | "all";
@@ -79,6 +80,24 @@ export interface RunsPerDayRow {
   runs: number;
 }
 
+/** Resource-hours plus the cost estimated from them, at the rates in effect right now. */
+export interface SandboxResourceUsage {
+  cpuHours: number;
+  ramGbHours: number;
+  diskGbHours: number;
+  estimatedCostUsd: number;
+}
+
+export interface SandboxOverview extends SandboxResourceUsage {
+  sandboxes: number;
+  aliveSeconds: number;
+}
+
+export interface SandboxOperationRow extends SandboxResourceUsage {
+  operation: string;
+  sandboxes: number;
+}
+
 export interface DashboardData {
   overview: DashboardOverview;
   toolBreakdown: ToolBreakdownRow[];
@@ -86,6 +105,8 @@ export interface DashboardData {
   failures: FailureRow[];
   recentRuns: RecentRunRow[];
   runsPerDay: RunsPerDayRow[];
+  sandboxOverview: SandboxOverview;
+  sandboxByOperation: SandboxOperationRow[];
 }
 
 async function fetchOverview(client: PoolClient, interval: string | null): Promise<DashboardOverview> {
@@ -218,6 +239,70 @@ async function fetchRunsPerDay(client: PoolClient): Promise<RunsPerDayRow[]> {
   return days;
 }
 
+/** Turns summed resource-*seconds* into hours plus the cost estimated from them. */
+function toResourceUsage(row: {
+  cpu_seconds: unknown;
+  ram_gb_seconds: unknown;
+  disk_gb_seconds: unknown;
+}): SandboxResourceUsage {
+  const cpuHours = Number(row.cpu_seconds) / 3600;
+  const ramGbHours = Number(row.ram_gb_seconds) / 3600;
+  const diskGbHours = Number(row.disk_gb_seconds) / 3600;
+  return {
+    cpuHours,
+    ramGbHours,
+    diskGbHours,
+    estimatedCostUsd: estimateCostUsd({ cpuHours, ramGbHours, diskGbHours }),
+  };
+}
+
+async function fetchSandboxOverview(
+  client: PoolClient,
+  interval: string | null,
+): Promise<SandboxOverview> {
+  const { rows } = await client.query(
+    `select
+       count(*)::int as sandboxes,
+       coalesce(sum(alive_seconds), 0) as alive_seconds,
+       coalesce(sum(alive_seconds * cpu), 0) as cpu_seconds,
+       coalesce(sum(alive_seconds * memory_gb), 0) as ram_gb_seconds,
+       coalesce(sum(alive_seconds * disk_gb), 0) as disk_gb_seconds
+     from pdfkit.sandbox_runs
+     where ($1::text is null or occurred_at >= now() - $1::interval)`,
+    [interval],
+  );
+  const row = rows[0];
+  return {
+    sandboxes: Number(row.sandboxes),
+    aliveSeconds: Number(row.alive_seconds),
+    ...toResourceUsage(row),
+  };
+}
+
+async function fetchSandboxByOperation(
+  client: PoolClient,
+  interval: string | null,
+): Promise<SandboxOperationRow[]> {
+  const { rows } = await client.query(
+    `select
+       operation,
+       count(*)::int as sandboxes,
+       coalesce(sum(alive_seconds * cpu), 0) as cpu_seconds,
+       coalesce(sum(alive_seconds * memory_gb), 0) as ram_gb_seconds,
+       coalesce(sum(alive_seconds * disk_gb), 0) as disk_gb_seconds
+     from pdfkit.sandbox_runs
+     where ($1::text is null or occurred_at >= now() - $1::interval)
+     group by operation
+     order by sandboxes desc`,
+    [interval],
+  );
+  return rows.map((row) => ({
+    operation: row.operation,
+    sandboxes: Number(row.sandboxes),
+    ...toResourceUsage(row),
+  }));
+}
+
 /**
  * Every section's query, run against one pooled client. `pg` queues queries fired on the
  * same client without awaiting between them, so this is genuinely concurrent from the
@@ -226,15 +311,35 @@ async function fetchRunsPerDay(client: PoolClient): Promise<RunsPerDayRow[]> {
 export async function getDashboardData(range: StatsRange): Promise<DashboardData | null> {
   const interval = rangeInterval(range);
   return withDb(async (client) => {
-    const [overview, toolBreakdown, runtimeSplit, failures, recentRuns, runsPerDay] = await Promise.all([
+    const [
+      overview,
+      toolBreakdown,
+      runtimeSplit,
+      failures,
+      recentRuns,
+      runsPerDay,
+      sandboxOverview,
+      sandboxByOperation,
+    ] = await Promise.all([
       fetchOverview(client, interval),
       fetchToolBreakdown(client, interval),
       fetchRuntimeSplit(client, interval),
       fetchFailures(client, interval),
       fetchRecentRuns(client),
       fetchRunsPerDay(client),
+      fetchSandboxOverview(client, interval),
+      fetchSandboxByOperation(client, interval),
     ]);
-    return { overview, toolBreakdown, runtimeSplit, failures, recentRuns, runsPerDay };
+    return {
+      overview,
+      toolBreakdown,
+      runtimeSplit,
+      failures,
+      recentRuns,
+      runsPerDay,
+      sandboxOverview,
+      sandboxByOperation,
+    };
   });
 }
 

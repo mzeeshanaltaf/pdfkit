@@ -56,7 +56,7 @@ from fastapi import HTTPException
 
 from app import config
 from app.deps import UploadBatch
-from app.services import placement, progress
+from app.services import placement, progress, sandbox_stats
 from app.services.responses import OutputFile
 
 logger = logging.getLogger(__name__)
@@ -350,7 +350,7 @@ async def _offload(
     # verdict is worked out afterwards from all of them.
     outcomes = await asyncio.gather(
         *(
-            _run_shard(pool, operation, batch, options, span, relay)
+            _run_shard(pool, operation, batch, options, span, relay, shards)
             for span, relay in zip(spans, relays)
         ),
         return_exceptions=True,
@@ -384,6 +384,7 @@ async def _run_shard(
     options: dict[str, Any],
     span: range,
     relay: _Relay,
+    shard_total: int,
 ) -> list[OutputFile]:
     """One shard's whole life: its own sandbox, its own files, its own teardown.
 
@@ -397,18 +398,37 @@ async def _run_shard(
         )
     except Exception as error:
         # Nothing was created, so there is nothing to dispose of — and the
-        # caller has lost nothing but the provisioning attempt.
+        # caller has lost nothing but the provisioning attempt. Also nothing
+        # to bill, so no telemetry record for this attempt.
         raise _Abandoned(f"provision failed: {type(error).__name__}: {error}") from error
 
+    # Starts here and stops just before `dispose()` below — the same window
+    # Daytona bills, per the live account cross-check `sandbox_stats` exists
+    # to reproduce.
+    provisioned_at = time.monotonic()
     global _open
     _open += 1
+    outcome = "ok"
     try:
         return await _run_batch(pool, sandbox_id, operation, batch, options, span, relay)
+    except _Abandoned:
+        outcome = "abandoned"
+        raise
+    except HTTPException as error:
+        outcome = "cancelled" if error.status_code == 499 else "failed"
+        raise
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except BaseException:
+        outcome = "failed"
+        raise
     finally:
         # Decremented whatever happens to the delete below: the count says how
         # many sandboxes this process is *using*, and one it has finished with
         # and failed to delete is the TTL's problem, not the bar's.
         _open -= 1
+        alive_seconds = time.monotonic() - provisioned_at
         # Per shard, not per request: one shard's failure must never leak a
         # sibling's sandbox. An unshielded delete gets cancelled by the very
         # cancellation that might have triggered it, and a sandbox nobody
@@ -420,6 +440,24 @@ async def _run_shard(
             )
         except Exception:  # noqa: BLE001 — auto-stop and the TTL are the backstop
             logger.exception("could not dispose of sandbox %s", sandbox_id)
+        # Approximated from what this shard already knows, rather than
+        # threading counters through `pool.put`/`pool.get`: the input files'
+        # own sizes for the upload side, and the shim's own reported
+        # `result_size` (the same number `_collect` already verifies the
+        # download against) for the download side.
+        sandbox_stats.record(
+            sandbox_id=sandbox_id,
+            operation=operation,
+            outcome=outcome,
+            shard_index=relay.shard,
+            shard_total=shard_total,
+            file_count=len(span),
+            alive_seconds=alive_seconds,
+            bytes_up=sum(batch.files[index].size for index in span),
+            bytes_down=sum(
+                int(result.get("result_size") or 0) for result in relay.results
+            ),
+        )
 
 
 def _recombine(outcomes: list[Any], relays: list[_Relay]) -> list[OutputFile]:
