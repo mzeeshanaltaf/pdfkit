@@ -9,15 +9,18 @@ import { formatBytes, percentSmaller } from "@/lib/format";
 import { ACCENT_TILE_CLASS, relatedTools, type Tool, toolHref } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
-import type { ToolResult } from "./types";
+import { PlacementBadge } from "./placement-badge";
+import type { ToolPlacement, ToolResult } from "./types";
 
 interface ResultViewProps {
   tool: Tool;
   result: ToolResult;
   onStartOver: () => void;
+  /** Where this run executed. Null for a browser tool, or a backend one that never said. */
+  placement?: ToolPlacement | null;
 }
 
-export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
+export function ResultView({ tool, result, onStartOver, placement }: ResultViewProps) {
   const { originalSize, resultSize, fileStats } = result;
   const saved =
     originalSize !== undefined && resultSize !== undefined
@@ -31,6 +34,7 @@ export function ResultView({ tool, result, onStartOver }: ResultViewProps) {
         <h2 className="mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
           {tool.name} is done
         </h2>
+        <PlacementBadge placement={placement ?? null} tense="done" className="mt-3" />
         {saved !== null && (
           <p className="mt-2 text-sm text-muted-foreground">
             {formatBytes(originalSize!)} to {formatBytes(resultSize!)}

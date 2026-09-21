@@ -3,7 +3,7 @@
 import { eventStream, uploadAndProcess, type ApiFileResponse } from "@/lib/api";
 import { withFreshToken } from "@/lib/token";
 
-import type { ToolRunContext } from "./types";
+import type { ToolPlacement, ToolRunContext } from "./types";
 
 interface BackendRunOptions {
   /** Stage text for the part of the job that happens on the server. */
@@ -18,6 +18,13 @@ interface ProgressState {
   file: { index: number; total: number; name: string };
   step: string;
   percent: number | null;
+  placement: ToolPlacement;
+}
+
+/** Reads `X-Processed-On`, or undefined if it is missing or not one of the two values. */
+function placementFromHeader(headers: Record<string, string>): ToolPlacement | undefined {
+  const value = headers["x-processed-on"];
+  return value === "server" || value === "sandbox" ? value : undefined;
 }
 
 /**
@@ -42,7 +49,7 @@ const QUEUED_STAGE = "Waiting for a free slot — the server is busy";
  * hands over to the server's own numbers and never hands back.
  */
 function createProgressBridge(
-  { setProgress, setStage, setDetail, signal }: ToolRunContext,
+  { setProgress, setStage, setDetail, setPlacement, signal }: ToolRunContext,
   { workingStage }: BackendRunOptions,
 ) {
   // 32 hex characters, which is the shape the backend's route accepts.
@@ -63,6 +70,9 @@ function createProgressBridge(
         ? `File ${state.file.index} of ${state.file.total} — ${state.file.name}`
         : state.file.name || null,
     );
+    // The live signal: arrives with the first frame, and corrects itself the moment a
+    // fallback happens mid-batch. The response header below is what has the final say.
+    setPlacement(state.placement);
   };
 
   const stopFallback = () => {
@@ -144,14 +154,14 @@ export async function runBackendTool(
   fields: Record<string, string>,
   options: BackendRunOptions,
 ): Promise<ApiFileResponse> {
-  const { files, setProgress, setStage } = context;
+  const { files, setProgress, setStage, setPlacement } = context;
   const bridge = createProgressBridge(context, options);
 
   setStage(files.length === 1 ? "Uploading your file" : `Uploading ${files.length} files`);
   setProgress(0);
 
   try {
-    return await withFreshToken((token) => {
+    const response = await withFreshToken((token) => {
       // Opened before the POST so a job that finishes in milliseconds cannot slip by
       // unseen; the backend keeps a finished job's channel around briefly for the
       // opposite case, where the stream is the one that arrives late.
@@ -168,6 +178,11 @@ export async function runBackendTool(
         },
       );
     });
+    // Authoritative: progress is best-effort and may never connect, but a response
+    // that arrived definitely carries this header — set for every backend response.
+    const processedOn = placementFromHeader(response.headers);
+    if (processedOn) setPlacement(processedOn);
+    return response;
   } finally {
     bridge.close();
   }

@@ -33,6 +33,9 @@ export interface ToolPage {
 
 export type ToolStatus = "select" | "configure" | "processing" | "done" | "error";
 
+/** Where a backend run actually executed. Mirrors `X-Processed-On` / the SSE `placement` field. */
+export type ToolPlacement = "server" | "sandbox";
+
 /** What ToolShell actually stores. "select" vs "configure" is derived from the file list. */
 export type ToolPhase = "idle" | "processing" | "done" | "error";
 
@@ -68,6 +71,12 @@ export interface ToolRunContext {
    * six browser-side tools need no edit at all, and none of them ever calls this.
    */
   setDetail: (detail: string | null) => void;
+  /**
+   * A fourth setter, same reasoning as `setDetail`: the six browser-side tools need no
+   * edit and never call it. `null` is "unknown yet"; the badge only ever renders once a
+   * backend tool has said which.
+   */
+  setPlacement: (placement: ToolPlacement | null) => void;
   signal: AbortSignal;
 }
 

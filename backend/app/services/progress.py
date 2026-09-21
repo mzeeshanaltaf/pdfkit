@@ -38,6 +38,7 @@ from dataclasses import dataclass, replace
 from fastapi import HTTPException
 
 from app import config
+from app.services import placement
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,10 @@ class Snapshot:
     percent: float | None = None
     terminal: bool = False
     reason: str = ""
+    #: `placement.SERVER` or `placement.SANDBOX` — where this request is running
+    #: *right now*, not where it started. A fallback mid-batch flips this on the
+    #: very next frame, so the bar corrects itself instead of lying.
+    placement: str = placement.SERVER
 
     def as_event(self) -> dict[str, object]:
         return {
@@ -89,6 +94,7 @@ class Snapshot:
             },
             "step": self.step,
             "percent": self.percent,
+            "placement": self.placement,
         }
 
 
@@ -251,6 +257,7 @@ class Publisher:
                 file_name=self._name,
                 step=self._step,
                 percent=self._percent,
+                placement=placement.current(),
             )
         )
 
@@ -340,6 +347,7 @@ class Publisher:
                 file_name=self._name,
                 step=self._step,
                 percent=100.0 if reason == DONE else self._percent,
+                placement=placement.current(),
                 terminal=True,
                 reason=reason,
             )

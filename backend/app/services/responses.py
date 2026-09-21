@@ -16,6 +16,7 @@ from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 
 from app.deps import UploadBatch, display_name, sanitise_filename
+from app.services import placement
 
 ZIP_MEDIA_TYPE = "application/zip"
 PDF_MEDIA_TYPE = "application/pdf"
@@ -93,6 +94,9 @@ def file_response(
     """
     cleanup = BackgroundTask(batch.cleanup)
     extra = dict(headers or {})
+    # Every backend response, single file and zip alike — one place, so no
+    # router can forget it.
+    extra["X-Processed-On"] = placement.current()
 
     if len(outputs) == 1:
         only = outputs[0]

@@ -39,7 +39,7 @@ from fastapi import HTTPException
 from app import config
 from app.deps import SavedUpload, UploadBatch
 from app.services import compress as compress_service
-from app.services import errors, offload, progress
+from app.services import errors, offload, placement, progress
 from app.services import markdown as markdown_service
 from app.services import ocr as ocr_service
 from app.services import word as word_service
@@ -72,9 +72,11 @@ def _fresh_offload() -> Iterator[None]:
     """The semaphore is process-global, like every other ceiling in this app."""
     offload.reset()
     progress.bind(progress.NULL, None)
+    placement.mark_server()
     yield
     offload.reset()
     progress.bind(progress.NULL, None)
+    placement.mark_server()
 
 
 #: Every operation with an offload head. The gate, the fallbacks and the error
@@ -532,6 +534,33 @@ async def test_relayed_progress_is_the_shim_s_own_numbers(
     assert moved, "no progress was relayed at all"
     assert moved == sorted(moved), "the bar went backwards"
     assert moved[-1] == 100.0
+
+
+# --- placement -----------------------------------------------------------
+
+
+@requires_ghostscript
+async def test_placement_is_marked_sandbox_once_a_shard_is_claimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: None
+) -> None:
+    use(monkeypatch, FakeSandboxPool(tmp_path / "sandboxes"))
+    batch = make_batch(tmp_path / "batch", {"a.pdf": build_text_pdf()})
+
+    assert placement.current() == placement.SERVER
+    outputs = await offload.maybe_offload("compress", batch, {"level": "recommended"})
+    assert outputs is not None
+    assert placement.current() == placement.SANDBOX
+
+
+async def test_placement_reverts_to_server_after_a_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: None
+) -> None:
+    """The test that would catch a badge that lies about a silent fallback."""
+    use(monkeypatch, ScriptedPool(provision_error=RuntimeError("no capacity")))
+    batch = make_batch(tmp_path, {"a.pdf": build_text_pdf()})
+
+    assert await offload.maybe_offload("compress", batch, {}) is None
+    assert placement.current() == placement.SERVER
 
 
 # --- fallback ----------------------------------------------------------------

@@ -1,8 +1,62 @@
 # Status
 
-Last updated: 2026-09-21 (Phase 10 part 5 — orphan sweep, CI snapshot builds, go-live)
+Last updated: 2026-09-21 (Phase 11 part 1 — offload visibility: placement travels with the run)
 
 ## Current phase
+
+**Phase 11 part 1 is code-complete and unit-tested, not yet verified live.**
+Plan: `docs/phases/phase-11-offload-visibility-phase1.md`. Built the one
+source of truth for "server or sandbox" (`app/services/placement.py`, a
+`ContextVar` module modelled on `progress.py`) and wired it through:
+`offload.maybe_offload` marks sandbox once a shard is claimed and reverts to
+server in the `_Abandoned` fallback; `progress.Snapshot`/`Publisher._emit`
+stamp `placement` onto every SSE frame (`Publisher.finish`'s frame too, which
+is built outside `_emit` and would otherwise have reported "server" on the
+very last frame of a sandboxed run — not in the plan's line range but needed
+for the badge not to flicker just before done); `responses.file_response`
+stamps `X-Processed-On` on every backend response; `main.py` exposes it over
+CORS. Frontend: `ToolRunContext` gained `setPlacement`, `backend-run.ts`
+relays it live from SSE and authoritatively from the response header,
+`ToolShell` owns the state and resets it per run, `unlock-workspace.tsx`
+reads the header itself (it bypasses `runBackendTool`), and a new shared
+`placement-badge.tsx` renders a "secure cloud sandbox" pill on the processing
+and done screens — nothing at all for the ordinary VPS path. No other tool
+workspace needed an edit.
+
+Tests: 2 new in `test_offload.py` (sandbox marked once a shard is claimed;
+reverts to server after a fallback — the test that would catch a lying
+badge), 1 new in `test_progress.py` (`as_event()` carries `placement`,
+`finish()` included), and 4 new in a new `tests/test_placement_headers.py`
+(`X-Processed-On` on single-file and zip responses, one per offloadable
+operation) — a separate file because `test_offload.py` already defines its
+own module-local `client` fixture (a fake Daytona client) that silently
+shadows conftest's `TestClient` fixture of the same name for the whole
+module; the header tests were first written inline there and failed with
+`'function' object has no attribute 'post'` until moved out.
+
+**Verified:** `uv run pytest -q` locally — **208 passed, 70 skipped**, the
+skips being the tools this dev machine lacks (ghostscript, qpdf) plus the
+opt-in live Daytona tests, consistent with every prior phase's local run.
+Frontend `npx tsc --noEmit` and `eslint` on every changed file are clean.
+**Not verified:** Docker Desktop was not running in this environment, so
+`docker compose run --rm --build backend-tests` (the full toolchain image)
+was not executed — worth a quick confirmation next session. Also outstanding
+from the plan's own verification section, both of which need a deployed
+environment: watching the sandbox pill appear live on a real offloaded batch,
+and confirming a bad `DAYTONA_SNAPSHOT` shows no pill and `X-Processed-On:
+server` end to end.
+
+### Still true from before this part — Phase 11 part 0, and Phase 10's go-live watch
+
+**Phase 11 part 0 is done, and the misconfiguration it found is fixed and
+verified live — see that section below.** `DAYTONA_ENABLED` had been flipped
+to `true` in Coolify at some point after Phase 10 part 5 shipped, without this
+file being updated (the "shipped dark" claim below is stale). Every offload
+attempt since was failing on `DaytonaAuthenticationError` because
+`DAYTONA_API_KEY` was empty in Coolify's stored config, and `DAYTONA_SNAPSHOT`
+was also still at its default rather than the CI-hashed name. Both are now
+set correctly and a redeploy has picked them up; two real production batches
+confirm sandboxes actually spin up and tear down now.
 
 **Phase 10 part 5 is code-complete and verified live. The feature is shipped
 dark: `DAYTONA_ENABLED` is still `false` in Coolify, and flipping it on is now
@@ -54,6 +108,83 @@ itself is live at [pdfkit.zeeshanai.cloud](https://pdfkit.zeeshanai.cloud), API 
 
 Phase 8 shipped on 2026-09-20. The only thing left on it is a browser pass — see
 "Left to do" at the end of the Phase 8 section.
+
+## Phase 11 part 0 — offload visibility: diagnosis spike (2026-09-21)
+
+Plan: `docs/phases/phase-11-offload-visibility-phase0.md`. No code changed —
+this is the by-hand SSH diagnosis the plan asked for, answering why a 3-file /
+~25 MB OCR batch appeared not to offload and took 10-15 minutes.
+
+### Finding: it tried, and it fails auth — not the snapshot the table guessed
+
+`DAYTONA_ENABLED` **is** `true` on the live container (`docker inspect`,
+4 chars) — Phase 10 part 5's "shipped dark, flag is off" note is stale; someone
+flipped it live without updating this file. The orphan sweep line is present
+at every boot (rules out row 1), but it and every offload attempt since
+carries the same WARNing:
+
+    orphan sweep skipped (DaytonaAuthenticationError: Authentication
+    credentials not found. Set DAYTONA_API_KEY, or both DAYTONA_JWT_TOKEN and
+    DAYTONA_ORGANIZATION_ID. ...); relying on ephemeral + auto-stop + the
+    30-minute TTL
+
+    offload of ocr abandoned, falling back locally: provision failed:
+    DaytonaAuthenticationError: ...
+    offload of compress abandoned, falling back locally: provision failed:
+    DaytonaAuthenticationError: ...   (5 occurrences, 05:57-07:09 UTC)
+
+`docker inspect`'s resolved environment confirms it directly (values masked,
+lengths shown): **`DAYTONA_API_KEY = <0 chars>`** — empty, not merely wrong.
+That's row 2 of the diagnosis table, but not the row's own "leading suspect":
+the plan guessed a stale `DAYTONA_SNAPSHOT` would be the culprit. It's wrong
+too — still its 16-char default `pdfkit-toolchain`, not the 30-char
+CI-hashed `pdfkit-toolchain-04701fea2e5e` the go-live checklist calls for —
+but that's currently invisible, because auth fails before a snapshot is ever
+looked up. Fixing the key alone will surface the snapshot problem next, not
+fix offloading outright.
+
+The Daytona account itself is clean: `GET /sandbox?labels={"app":"pdfkit"}`
+returns zero sandboxes, so nothing is orphaned or quietly billing (also rules
+out row 4 — the WARN lines above are proof it tried and failed loudly, not
+proof of silence).
+
+### Is this a one-variable Coolify fix?
+
+No — two variables, and both need a **redeploy**, not a restart
+(`config.py` reads env at import, per the plan's own note). `DAYTONA_API_KEY`
+needs an actual value in Coolify (the running container is 2 hours old and
+matches HEAD `9b6b66f`, so this is Coolify's current stored value, not a
+stale pre-redeploy artifact), and `DAYTONA_SNAPSHOT` needs to be set to
+`pdfkit-toolchain-04701fea2e5e`.
+
+**Applied and verified live**, with the user's explicit go-ahead (this is a
+production change: spends Daytona credits, changes what a real user's batch
+runs on). Both vars set via the Coolify API (`PATCH
+/api/v1/applications/b1s6cgebvkpxxrzzjp2d2244/envs`), then a redeploy
+(`POST /api/v1/deploy`) to pick them up — `config.py` reads env at import, so
+a restart alone would not have. The fresh container's `docker inspect` shows
+`DAYTONA_API_KEY` non-empty and `DAYTONA_SNAPSHOT` at the full 29-char
+CI-hashed name, and its boot log now reads
+`orphan sweep: deleted 0 leftover sandbox(es)` at **INFO**, not the WARNING
+auth failure from before.
+
+Confirmed with two real batches against production
+(`api.pdfkit.zeeshanai.cloud/ocr`, 2 files / ~10.7 MB from
+`PDFKit Samples/Offloading Samples/OCR/`, clearing `DAYTONA_MIN_FILES=2` and
+`DAYTONA_MIN_BYTES=5242880`): no `abandoned, falling back locally` line
+appeared (100% of attempts before the fix had one), and polling `/health`
+during the second run caught its `sandboxes` counter directly — `0 → 2 → 1 →
+0` as the two-file batch sharded into two sandboxes, one finished, then both
+tore down. Both batches returned `200` in ~105 s, against the 10-15 minutes
+the original 3-file/25 MB batch took running entirely local. Nothing was left
+running on the Daytona account afterwards.
+
+### Confirms Phases 1-4 of this effort are unaffected
+
+Every row in the diagnosis table was reachable purely from `docker logs` /
+`docker inspect` / the Daytona API, by hand, today — exactly the blind spot
+Phase 2's permanent instrumentation exists to close permanently. Nothing here
+changes the design of Phases 1-4.
 
 ## Phase 10 part 5 — orphan sweep, CI snapshot builds, go-live (2026-09-21)
 

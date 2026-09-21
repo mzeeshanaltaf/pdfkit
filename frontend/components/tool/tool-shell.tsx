@@ -22,7 +22,14 @@ import { ProcessingView } from "./processing-view";
 import { ResultView } from "./result-view";
 import { SortButton } from "./sort-button";
 import { ToolShellProvider, type ToolShellValue } from "./tool-shell-context";
-import type { ToolFile, ToolPhase, ToolProcess, ToolResult, ToolStatus } from "./types";
+import type {
+  ToolFile,
+  ToolPhase,
+  ToolPlacement,
+  ToolProcess,
+  ToolResult,
+  ToolStatus,
+} from "./types";
 import { usePdfDropzone } from "./use-pdf-dropzone";
 import { useToolFiles } from "./use-tool-files";
 
@@ -84,6 +91,7 @@ export function ToolShell({
   const [progress, setProgress] = useState<number | null>(null);
   const [stage, setStage] = useState("Working on it");
   const [detail, setDetail] = useState<string | null>(null);
+  const [placement, setPlacement] = useState<ToolPlacement | null>(null);
   const [result, setResult] = useState<ToolResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   /** True when the run failed because a file turned out to be encrypted. See `handleSubmit`. */
@@ -148,6 +156,7 @@ export function ToolShell({
     setProgress(null);
     setStage("Working on it");
     setDetail(null);
+    setPlacement(null);
     setErrorMessage(null);
 
     try {
@@ -156,6 +165,7 @@ export function ToolShell({
         setProgress,
         setStage,
         setDetail,
+        setPlacement,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -271,6 +281,7 @@ export function ToolShell({
           stage={stage}
           detail={detail}
           onCancel={handleCancel}
+          placement={placement}
         />
         {overlay}
       </>
@@ -280,7 +291,7 @@ export function ToolShell({
   if (status === "done" && result) {
     return (
       <>
-        <ResultView tool={tool} result={result} onStartOver={startOver} />
+        <ResultView tool={tool} result={result} onStartOver={startOver} placement={placement} />
         {overlay}
       </>
     );

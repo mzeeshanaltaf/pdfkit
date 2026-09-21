@@ -5,6 +5,9 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
+import { PlacementBadge } from "./placement-badge";
+import type { ToolPlacement } from "./types";
+
 interface ProcessingViewProps {
   /** 0-100 for a real measured percentage, or null for an indeterminate wait. */
   progress: number | null;
@@ -13,9 +16,17 @@ interface ProcessingViewProps {
   detail?: string | null;
   /** Omitted by a tool with nothing to cancel — the button is then not rendered. */
   onCancel?: () => void;
+  /** Where this run is executing, once a backend tool has said. Null for browser tools. */
+  placement?: ToolPlacement | null;
 }
 
-export function ProcessingView({ progress, stage, detail, onCancel }: ProcessingViewProps) {
+export function ProcessingView({
+  progress,
+  stage,
+  detail,
+  onCancel,
+  placement,
+}: ProcessingViewProps) {
   const measured = progress !== null;
 
   return (
@@ -47,6 +58,8 @@ export function ProcessingView({ progress, stage, detail, onCancel }: Processing
         >
           {detail ?? ""}
         </p>
+
+        <PlacementBadge placement={placement ?? null} tense="running" className="mt-3" />
 
         {onCancel && (
           <Button variant="ghost" size="sm" className="mt-4" onClick={onCancel}>

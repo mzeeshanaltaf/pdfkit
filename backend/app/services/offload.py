@@ -56,7 +56,7 @@ from fastapi import HTTPException
 
 from app import config
 from app.deps import UploadBatch
-from app.services import progress
+from app.services import placement, progress
 from app.services.responses import OutputFile
 
 logger = logging.getLogger(__name__)
@@ -276,12 +276,18 @@ async def maybe_offload(
             shards,
         )
 
+    # Optimistic: a shard could still fail before producing anything, in which
+    # case the `_Abandoned` handler below is the honest revert. Set here rather
+    # than deeper in `_offload` because everything below runs partly inside
+    # `gather` children, which copy the context and cannot write back to it.
+    placement.mark_sandbox()
     try:
         return await _offload(operation, batch, options, shards)
     except _Abandoned as error:
         logger.warning("offload of %s abandoned, falling back locally: %s", operation, error)
         if not config.DAYTONA_FALLBACK_LOCAL:
             raise HTTPException(status_code=502, detail=FAILED) from None
+        placement.mark_server()
         return None
     finally:
         for _ in range(shards):

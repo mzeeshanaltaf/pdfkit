@@ -24,6 +24,7 @@ export default function UnlockWorkspace() {
       setProgress,
       setStage,
       setDetail,
+      setPlacement,
       signal,
     }: ToolRunContext): Promise<ToolResult> => {
       // One request per file rather than one for the batch: the backend takes a single
@@ -69,6 +70,10 @@ export default function UnlockWorkspace() {
             ),
           );
           results.push(result);
+          // No progress stream on this path (one request per file already gives a stream's
+          // granularity), so this is the only place Unlock ever learns where it ran.
+          const processedOn = result.headers["x-processed-on"];
+          if (processedOn === "server" || processedOn === "sandbox") setPlacement(processedOn);
         }
       } finally {
         dismissPrompt();

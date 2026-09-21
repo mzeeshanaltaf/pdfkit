@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
-from app.services import progress
+from app.services import placement, progress
 from app.services.responses import OutputFile
 
 from .conftest import upload
@@ -137,6 +137,27 @@ def test_percent_is_batch_wide_and_never_goes_backwards() -> None:
     # reads as broken.
     publisher.percent(10)
     assert channel.snapshot.percent == 37.5
+
+
+def test_as_event_carries_placement() -> None:
+    """The field the live bar and the done screen both read the badge off of."""
+    channel = progress.registry.claim(JOB)
+    assert channel is not None
+    publisher = progress.Publisher(channel)
+
+    publisher.file(1, 1, "one.pdf")
+    assert channel.snapshot.as_event()["placement"] == placement.SERVER
+
+    placement.mark_sandbox()
+    try:
+        publisher.step("Compressing")
+        assert channel.snapshot.as_event()["placement"] == placement.SANDBOX
+
+        # The terminal frame is built outside `_emit` and must not forget it.
+        publisher.finish()
+        assert channel.snapshot.as_event()["placement"] == placement.SANDBOX
+    finally:
+        placement.mark_server()
 
 
 def test_the_null_publisher_swallows_everything() -> None:

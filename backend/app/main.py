@@ -64,6 +64,7 @@ app.add_middleware(
         "X-Original-Size",
         "X-Result-Size",
         "X-File-Stats",
+        "X-Processed-On",
     ],
 )
 
