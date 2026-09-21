@@ -17,11 +17,13 @@ after it), a **content-hashed CI snapshot pipeline**
 
 **It also overturned part 4's headline finding.** Part 4 measured Compress as
 a wall-clock *loss* with a break-even around 77 files. Re-measured from the
-VPS on the real documents in `PDFKit Samples/`, Compress is **1.73x faster
-offloaded** and leaves the VPS **83-98% idle** where a local run pegs both
-cores for three minutes. Part 4's number was an artifact of its synthetic
-one-photo-page corpus, exactly as its own caveat warned. **`compress` stays in
-`DAYTONA_OPERATIONS`.** See "Compress, re-measured" below.
+VPS on the real documents in `PDFKit Samples/`, Compress is **1.4x-1.7x
+faster offloaded** (three runs, ±15% spread) and leaves the VPS **83-98%
+idle** where a local run pegs both cores for three minutes. Part 4's number
+was an artifact of its synthetic one-photo-page corpus, exactly as its own
+caveat warned. **`compress` stays in `DAYTONA_OPERATIONS`.** See "Compress,
+re-measured" below — including why a workstation run is not evidence either
+way.
 
 Parts 0-4 are done and written up below.
 
@@ -155,17 +157,37 @@ measure the documents users actually upload instead of generated ones. Run
 against `PDFKit Samples/` — a 50 MB insurance policy, a 15 MB one, a 4 MB
 company profile, a 1.4 MB scan, a 108 KB certificate; 70.7 MB in five files:
 
-| run from | local | offloaded | |
-|---|---|---|---|
-| **the VPS** (the only one that counts) | **189.0 s** | **109.2 s** | **1.73x faster** |
-| a workstation | 77.2 s | 171.7 s | 0.45x |
+**From the VPS — the only machine that serves production:**
 
-The workstation row is in the table only to show why the harness docstring
-insists on the VPS: there, transfer was 44.3 s of a 171.7 s run (residential
-link) and the local baseline ran on a CPU that beats the sandbox. From the
-VPS the same 120 MB of transfer costs **3.7 s**, and the sandbox out-computes
-the throttled 2 vCPU box **1.79x**. Both of part 0's link measurements
-reproduce exactly.
+| | |
+|---|---|
+| local (2 vCPU, `--jobs 2`) | **189.0 s** |
+| offloaded (2 sandboxes, 4 vCPU each) | **109.2 s** and **131.5 s**, two runs |
+| | **1.4x - 1.7x faster** |
+
+Sandbox compute on this identical input measured **105.8 s, 129.3 s and
+134.9 s** across three runs — about ±15% run to run, which is the honest
+error bar on the speedup and is wider than any single pair suggests. The
+conclusion survives the whole spread: even the slowest sandbox run plus the
+VPS's 3.7 s of transfer beats 189 s of local Ghostscript. Only one local
+baseline was taken, so it carries no error bar at all; treat 189 s as one
+sample, not a constant.
+
+**A workstation run is not a comparison, and is not presented as one.** The
+same batch on an i7-14700K (20 cores, 64 GB) went 77.2 s local against
+171.7 s offloaded — a number about *that desk*, not about whether offloading
+helps the VPS. A 20-core CPU beating a 4 vCPU sandbox says nothing either
+way, and 44.3 s of the offloaded run was a residential uplink pushing 70 MB.
+The one thing it is evidence for is the link: **44.3 s from a workstation
+against 3.7 s from the VPS for the same bytes**, which reproduces part 0's
+~1.4 MB/s vs ~60 MB/s measurement exactly and is precisely why
+`verify_offload.py`'s docstring refuses to let its verdict be believed from
+anywhere but the VPS.
+
+The practical corollary: **running the backend locally with
+`DAYTONA_ENABLED=true` will look like a regression**, on this hardware
+especially. That is correct behaviour, not a bug, and is one more reason the
+flag defaults to false.
 
 **And the CPU argument, which part 4 could not test, holds outright.** Sampling
 `vmstat` on the VPS through an offloaded Compress of the same five documents:
@@ -174,8 +196,10 @@ reproduce exactly.
     sandbox compute (120 s) 83-98% idle  <- typically 90%+
     download (~2 s)         13-44% idle
 
-Against 189 s of both cores pegged, which is what the local path costs and is
-precisely the shape of load that twice tripped Hostinger's throttle.
+Against the ~190 s of both cores pegged that the local path costs, which is
+precisely the shape of load that twice tripped Hostinger's throttle. This is
+the argument that does not depend on the speedup being 1.4x or 1.7x, or on
+its being a speedup at all: the VPS is idle either way.
 
 **Conclusion: `compress` stays in `DAYTONA_OPERATIONS`.** Part 4's caveat was
 right about itself — one synthetic photo page per file understates
