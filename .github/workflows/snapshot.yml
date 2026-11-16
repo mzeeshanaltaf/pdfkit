@@ -127,6 +127,10 @@ jobs:
     # job exists to manufacture, so doing both would pay for it twice.
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only for the last step: re-enabling this workflow through the API.
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -145,3 +149,19 @@ jobs:
           echo "Warming ${name}"
           uv run --no-project --with daytona python scripts/build_snapshot.py \
             --name "${name}" --warm
+
+      # GitHub disables scheduled workflows after 60 days without repository
+      # activity, and a disabled cron stops warming the snapshot (Daytona then
+      # deactivates it and every batch falls back to the VPS). Calling the
+      # "enable workflow" endpoint on ourselves each week is the usual way to
+      # reset that timer without making commits. Best-effort: it must never
+      # fail a warm run that otherwise succeeded. If the repo goes quiet and
+      # GitHub emails again, any push or re-enabling on the Actions page
+      # also resets it.
+      - name: Keep this workflow from being auto-disabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT \
+            "repos/${{ github.repository }}/actions/workflows/snapshot.yml/enable"
